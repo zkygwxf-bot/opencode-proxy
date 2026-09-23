@@ -1,5 +1,9 @@
 # opencode-proxy — free OpenAI-compatible LLM API (no key, no signup)
 
+<p align="center">
+  <img src="og-card.png" alt="opencode-proxy — FREE LLM API: $0, no signup, no key. OpenCode Zen free models for every OpenAI client." width="100%">
+</p>
+
 Use OpenCode Zen's free large language models through a standard,
 self-hosted OpenAI-compatible API — a free LLM proxy with zero dependencies.
 
