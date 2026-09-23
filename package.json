@@ -12,15 +12,24 @@
   "keywords": [
     "opencode",
     "openai-compatible",
+    "openai-proxy",
+    "free-llm",
+    "free-api",
+    "free-ai-models",
+    "llm-proxy",
+    "llm-gateway",
+    "self-hosted",
+    "local-llm",
     "proxy",
     "llm",
-    "free-models",
     "zen",
     "mimo",
     "nemotron",
     "big-pickle",
     "muse-spark",
-    "self-hosted"
+    "chat-completions",
+    "ai-agents",
+    "coding-assistant"
   ],
   "scripts": {
     "start": "node proxy.mjs",

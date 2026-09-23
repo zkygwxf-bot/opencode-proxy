@@ -1,4 +1,7 @@
-# opencode-proxy
+# opencode-proxy — free OpenAI-compatible LLM API (no key, no signup)
+
+Use OpenCode Zen's free large language models through a standard,
+self-hosted OpenAI-compatible API — a free LLM proxy with zero dependencies.
 
 [![Node >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -9,11 +12,13 @@
 
 ### Frontier models. Zero dollars. Zero signup. Any OpenAI client.
 
-OpenCode Zen ships free-tier models — `mimo`, `nemotron`, `ling`,
-`big-pickle`, `muse-spark` — that normally only answer inside the OpenCode
-CLI. **opencode-proxy unlocks them for everything**: your scripts, your
-agents, your IDE, your chat UI. One local server, one base-URL swap, and
-every tool you already own suddenly runs on free frontier models.
+Looking for a **free LLM API** or a **free OpenAI-compatible proxy** for
+your agents, scripts, and IDE tools? OpenCode Zen ships free-tier AI models
+— `mimo`, `nemotron`, `ling`, `big-pickle`, `muse-spark` — that normally
+only answer inside the OpenCode CLI. **opencode-proxy unlocks them for
+everything**: your scripts, your agents, your IDE, your chat UI. One local
+server, one base-URL swap, and every tool you already own suddenly runs on
+free frontier models. Self-hosted, no signup, no API key, no credit card.
 
 ```bash
 git clone https://github.com/zkygwxf-bot-Varma/opencode-proxy.git
@@ -61,7 +66,7 @@ normal OpenAI code. The proxy does the spy work.**
 | Tools | 6+ real OpenCode tools or rejected | Auto-injected when missing |
 | Cost | $0 | $0 |
 
-## What you get
+## What you get — a free self-hosted AI gateway
 
 - **9 free models, live today** — chat + reasoning + stealth + multimodal,
   all verified working (see table below)
@@ -80,7 +85,7 @@ normal OpenAI code. The proxy does the spy work.**
 - **Paid models ride free** — set `OPENCODE_API_KEY` and non-free Zen models
   proxy through the same endpoint, no extra config
 
-## Quickstart
+## Quickstart — free LLM inference in 60 seconds
 
 Requirements: Node 18+ and the `opencode` CLI. That's it — **no account, no
 key, no card** for free models.
@@ -113,7 +118,7 @@ after a while — if `FreeTierError` ever returns, repeat step 1 (30 seconds).
 one command. The proxy learns fresh identity from that traffic and updates
 `session.json` by itself.
 
-## Plug it into your stack
+## Plug it into your stack — works with every OpenAI client
 
 Base URL `http://127.0.0.1:8788/v1`, any `api_key` value. Two changed lines and
 you're running on free models:
@@ -141,7 +146,7 @@ curl http://127.0.0.1:8788/v1/responses \
        "input":"Say hi in 5 words","store":false}'
 ```
 
-## Free models, live today
+## Free AI models, live today (no API key required)
 
 Every ID below was verified working through this proxy:
 
@@ -174,7 +179,7 @@ Per request the proxy attaches `User-Agent: opencode/...` plus
 and injects genuine OpenCode tool definitions when yours are missing. About
 100 lines of readable Node — go look.
 
-## FAQ
+## FAQ — free LLM proxy questions
 
 **Really no key, no signup?** Really. Free models ride the public tier,
 exactly like a fresh `opencode` install. A key (`OPENCODE_API_KEY`) is only
@@ -199,3 +204,11 @@ keys of their own.
 
 MIT — see [LICENSE](LICENSE). If free inference saved you money, a star is
 appreciated.
+
+---
+
+*opencode-proxy: a free, self-hosted, OpenAI-compatible LLM gateway for
+OpenCode Zen's free-tier AI models — free chatbot API, free coding-assistant
+models, and free agent inference with no signup and no API key. An
+open-source alternative to paid LLM APIs for developers, researchers, and
+hobbyists running local AI workflows.*
