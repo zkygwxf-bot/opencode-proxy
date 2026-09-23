@@ -13,7 +13,9 @@
 //      instead of emitting tool_calls the client never asked for.
 //   3. Forwards to https://opencode.ai/zen/v1 and streams the response back.
 //
-// NOTE: use your OWN Zen API key (OPENCODE_API_KEY). Do not share keys.
+// NOTE: no key needed for free models — like a fresh `opencode` install,
+// the proxy defaults to the literal key "public". Set OPENCODE_API_KEY only
+// if you also want paid Zen models through the same endpoint.
 // Free models are rate-limited and may be withdrawn at any time; this proxy
 // does not change that. If upstream returns FreeTierError the proxy reports
 // it and you should re-run `npm run capture` to refresh the session identity.
@@ -40,10 +42,13 @@ const RESPONSES_TOOLS = JSON.parse(
 const MIN_TOOLS = 6;
 
 function getApiKey() {
+  // Free ($0) models accept the literal key "public" — same as a fresh
+  // `opencode` install with no key configured. A real Zen key is only
+  // needed for paid models.
   return (
     process.env.OPENCODE_API_KEY ||
     process.env.OPENCODE_ZEN_API_KEY ||
-    null
+    "public"
   );
 }
 
@@ -249,11 +254,6 @@ const server = http.createServer((req, res) => {
     }
 
     const apiKey = getApiKey();
-    if (!apiKey) {
-      return sendJson(res, 500, {
-        error: "Set OPENCODE_API_KEY env var with your Zen key.",
-      });
-    }
 
     let upstreamPath = null;
     if (url.pathname === "/v1/models" || url.pathname === "/zen/v1/models") {
@@ -277,7 +277,7 @@ const server = http.createServer((req, res) => {
     const session = loadSession();
     if (upstreamPath !== "/zen/v1/models" && !session?.xSessionId) {
       return sendJson(res, 500, {
-        error: "Missing session.json. Run: OPENCODE_API_KEY=sk-... npm run capture",
+        error: "Missing session.json. Run: npm run capture (see README)",
       });
     }
 
@@ -429,4 +429,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`opencode-zen-proxy listening on http://127.0.0.1:${PORT}`);
   console.log(`OpenAI base URL: http://127.0.0.1:${PORT}/v1`);
+  if (getApiKey() === "public") {
+    console.log("No OPENCODE_API_KEY set — running keyless (free models only).");
+  }
 });

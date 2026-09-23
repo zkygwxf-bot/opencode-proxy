@@ -11,8 +11,7 @@ proxy that exposes Zen's free tier (`mimo`, `nemotron`, `ling`,
 — so any tool that speaks OpenAI works: SDKs, agents, chat UIs, IDE plugins.
 
 ```bash
-export OPENCODE_API_KEY="sk-..."   # your own Zen key
-node proxy.mjs                     # listening on http://127.0.0.1:8788
+node proxy.mjs                     # listening on http://127.0.0.1:8788, no key needed
 ```
 
 ```python
@@ -59,18 +58,19 @@ handshake.
 
 ## Quickstart
 
-Requirements: Node 18+, the `opencode` CLI, and **your own** Zen API key
-([get one here](https://opencode.ai)).
+Requirements: Node 18+ and the `opencode` CLI. **No API key needed for
+free models** — like a fresh `opencode` install, the proxy uses the public
+free tier. (Set `OPENCODE_API_KEY` only if you also want paid Zen models
+through the same endpoint.)
 
 ```bash
 git clone https://github.com/zkygwxf-bot-Varma/opencode-proxy.git
 cd opencode-proxy
-export OPENCODE_API_KEY="sk-..."   # or OPENCODE_ZEN_API_KEY
 
 # 1. Capture a session identity (~30s). Terminal A:
 node capture.mjs
 
-#    Terminal B, same key exported:
+#    Terminal B:
 mkdir -p /tmp/zencap && cat > /tmp/zencap/opencode.json <<'EOF'
 {"$schema":"https://opencode.ai/config.json",
  "provider":{"opencode":{"options":{"baseURL":"http://127.0.0.1:18787/zen/v1"}}}}
@@ -93,8 +93,8 @@ The proxy learns the fresh identity from that traffic and updates
 
 ## Use it with anything
 
-Base URL `http://127.0.0.1:8788/v1`. Any `api_key` value works — the real key
-comes from the proxy's environment.
+Base URL `http://127.0.0.1:8788/v1` with any `api_key` value — no key,
+no signup.
 
 | Client | Config |
 |---|---|
@@ -150,8 +150,10 @@ and injects genuine OpenCode tool definitions when yours are missing.
 endorsed, or supported by the OpenCode team. Free-tier availability and
 rules are theirs and can change anytime.
 
-**Do I need my own key?** Yes. Bring your own Zen key via `OPENCODE_API_KEY`.
-Never commit keys or `session.json`.
+**Do I need a key?** No — not for free models. The proxy uses the public
+free tier, exactly like a fresh `opencode` install with no key configured.
+Set `OPENCODE_API_KEY` only if you want paid Zen models through the same
+endpoint.
 
 **It worked, now I get `FreeTierError`?** Your session identity expired —
 repeat the 30-second capture step.
