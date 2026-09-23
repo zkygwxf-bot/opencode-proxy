@@ -1,0 +1,3 @@
+node_modules/
+.session-capture/
+session.json
