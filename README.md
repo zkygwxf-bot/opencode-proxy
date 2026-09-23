@@ -4,18 +4,26 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991)](https://platform.openai.com/docs/api-reference)
 [![No deps](https://img.shields.io/badge/dependencies-zero-lightgrey)](#)
+[![No signup](https://img.shields.io/badge/signup-none%20required-success)](#quickstart)
+[![Cost](https://img.shields.io/badge/cost-%240.00-success)](#free-models-live-today)
 
-**Use OpenCode Zen's free models anywhere.** A tiny zero-dependency local
-proxy that exposes Zen's free tier (`mimo`, `nemotron`, `ling`,
-`big-pickle`, `muse-spark` free models) as a standard OpenAI-compatible API
-— so any tool that speaks OpenAI works: SDKs, agents, chat UIs, IDE plugins.
+### Frontier models. Zero dollars. Zero signup. Any OpenAI client.
+
+OpenCode Zen ships free-tier models — `mimo`, `nemotron`, `ling`,
+`big-pickle`, `muse-spark` — that normally only answer inside the OpenCode
+CLI. **opencode-proxy unlocks them for everything**: your scripts, your
+agents, your IDE, your chat UI. One local server, one base-URL swap, and
+every tool you already own suddenly runs on free frontier models.
 
 ```bash
-node proxy.mjs                     # listening on http://127.0.0.1:8788, no key needed
+git clone https://github.com/zkygwxf-bot-Varma/opencode-proxy.git
+cd opencode-proxy && node proxy.mjs
+# → http://127.0.0.1:8788/v1  (no key, no account, no card)
 ```
 
 ```python
 from openai import OpenAI
+
 client = OpenAI(base_url="http://127.0.0.1:8788/v1", api_key="anything")
 r = client.chat.completions.create(
     model="mimo-v2.6-flash-free",
@@ -24,44 +32,58 @@ r = client.chat.completions.create(
 print(r.choices[0].message.content)
 ```
 
-## Why
+If you like it, star the repo — it helps others find free inference.
 
-Calling a Zen free model directly fails:
+---
+
+## Why this exists
+
+Call a Zen free model directly and you get slapped with:
 
 ```json
 {"type":"error","error":{"type":"FreeTierError",
  "message":"OpenCode's free tier can only be used from within OpenCode"}}
 ```
 
-The free tier only answers requests that look like they come from the
-OpenCode CLI: OpenCode session headers, streaming requests, and an agentic
-payload with real OpenCode tool definitions. This proxy adds all of that
-automatically, then translates the result back into the plain OpenAI shape
-your client expects. You write normal OpenAI code; the proxy handles the
-handshake.
+The free tier only answers requests that *look like OpenCode*: real session
+headers, streaming transport, and an agentic payload carrying genuine
+OpenCode tool definitions. Miss any one of those and you're rejected.
 
-## Features
+opencode-proxy does the handshake for you — on every request, invisibly —
+then hands your client a boring, standard OpenAI response. **You write
+normal OpenAI code. The proxy does the spy work.**
 
-- **OpenAI-compatible** — `/v1/models`, `/v1/chat/completions`,
-  `/v1/responses` (for `muse-spark` free models), `/health`
-- **Streaming + non-streaming** — free tier only answers streaming
-  requests, so the proxy always streams upstream and re-assembles a normal
-  JSON object when your client asked for `stream: false`
-- **Tool injection** — adds 6+ genuine OpenCode tool definitions when your
-  request has few/none, with `tool_choice: "none"` so the model answers in
-  text instead of emitting `tool_calls` you never asked for. Your own tools
-  pass through untouched when you supply them
-- **Session learning** — point real OpenCode at the proxy once and it saves
-  fresh identity headers automatically; no manual refresh step
-- **Zero dependencies** — one `proxy.mjs`, Node 18+ stdlib only
-- **Paid models too** — non-free Zen models proxy through unchanged
+| | Direct call | Via opencode-proxy |
+|---|---|---|
+| Key / signup | Rejected without OpenCode identity | None. Zero. |
+| Any OpenAI client | No — `FreeTierError` | Yes — SDKs, agents, IDEs, chat UIs |
+| Streaming | Required, or rejected | Your choice — proxy adapts |
+| Tools | 6+ real OpenCode tools or rejected | Auto-injected when missing |
+| Cost | $0 | $0 |
+
+## What you get
+
+- **9 free models, live today** — chat + reasoning + stealth + multimodal,
+  all verified working (see table below)
+- **Truly OpenAI-compatible** — `/v1/models`, `/v1/chat/completions`,
+  `/v1/responses`, `/health`. If a tool takes a base URL, it works
+- **Streaming and non-streaming** — the free tier only speaks SSE, so the
+  proxy streams upstream and re-assembles clean JSON when you asked for
+  `stream: false`
+- **Invisible tool injection** — genuine OpenCode tools are added when yours
+  are missing, with `tool_choice: "none"`, so you get plain text instead of
+  stray `tool_calls`. Your own tools pass through untouched
+- **Self-healing sessions** — route real OpenCode through the proxy once and
+  it refreshes its own identity headers automatically
+- **Zero dependencies** — a single `proxy.mjs`, Node 18+ stdlib only.
+  Audit it in one sitting
+- **Paid models ride free** — set `OPENCODE_API_KEY` and non-free Zen models
+  proxy through the same endpoint, no extra config
 
 ## Quickstart
 
-Requirements: Node 18+ and the `opencode` CLI. **No API key needed for
-free models** — like a fresh `opencode` install, the proxy uses the public
-free tier. (Set `OPENCODE_API_KEY` only if you also want paid Zen models
-through the same endpoint.)
+Requirements: Node 18+ and the `opencode` CLI. That's it — **no account, no
+key, no card** for free models.
 
 ```bash
 git clone https://github.com/zkygwxf-bot-Varma/opencode-proxy.git
@@ -79,88 +101,101 @@ cd /tmp/zencap && opencode run "say hi" \
   --model opencode/mimo-v2.6-flash-free --standalone
 # capture.mjs saves session.json and exits.
 
-# 2. Start the proxy:
+# 2. Start printing free tokens:
 node proxy.mjs   # or: PORT=8788 node proxy.mjs
 ```
 
-`session.json` holds only session-affinity IDs (never your API key) and
-expires after a while — if `FreeTierError` returns, repeat step 1.
+`session.json` holds only session-affinity IDs (never a key) and expires
+after a while — if `FreeTierError` ever returns, repeat step 1 (30 seconds).
 
-**Shortcut:** set `provider.opencode.options.baseURL` to
-`http://127.0.0.1:8788/zen/v1` in any OpenCode project and run one command.
-The proxy learns the fresh identity from that traffic and updates
+**Shortcut:** point any OpenCode project's
+`provider.opencode.options.baseURL` at `http://127.0.0.1:8788/zen/v1` and run
+one command. The proxy learns fresh identity from that traffic and updates
 `session.json` by itself.
 
-## Use it with anything
+## Plug it into your stack
 
-Base URL `http://127.0.0.1:8788/v1` with any `api_key` value — no key,
-no signup.
+Base URL `http://127.0.0.1:8788/v1`, any `api_key` value. Two changed lines and
+you're running on free models:
 
-| Client | Config |
+| Your stack | What changes |
 |---|---|
-| cURL | `curl http://127.0.0.1:8788/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"Hi"}]}'` |
-| Python SDK | `OpenAI(base_url="http://127.0.0.1:8788/v1", api_key="x")` |
-| Node SDK | `new OpenAI({ baseURL: "http://127.0.0.1:8788/v1", apiKey: "x" })` |
-| Continue / Cline / Roo | Add an OpenAI-compatible provider pointing at `http://127.0.0.1:8788/v1` |
-| LiteLLM | `model: openai/mimo-v2.6-flash-free, api_base: http://127.0.0.1:8788/v1` |
-| Anything OpenAI-shaped | If it takes a base URL + model name, it works |
-
-Responses API (for the `muse-spark` free models):
+| Python / Node SDKs | `base_url` / `baseURL` → `http://127.0.0.1:8788/v1` |
+| Continue, Cline, Roo Code | Add an OpenAI-compatible provider with that base URL |
+| LiteLLM gateway | `api_base: http://127.0.0.1:8788/v1` |
+| Chat UIs (Open WebUI, SillyTavern, …) | New OpenAI connection, same URL |
+| Your weekend agent project | Swap the base URL, keep everything else |
+| cURL diehards | Example below |
 
 ```bash
+# Chat models
+curl http://127.0.0.1:8788/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"mimo-v2.6-flash-free",
+       "messages":[{"role":"user","content":"Explain closures briefly"}]}'
+
+# Responses API (muse-spark free models)
 curl http://127.0.0.1:8788/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{"model":"muse-spark-1.3-contributor-free",
        "input":"Say hi in 5 words","store":false}'
 ```
 
-## Free models (verified)
+## Free models, live today
 
-| Model ID | Endpoint | Notes |
+Every ID below was verified working through this proxy:
+
+| Model | Endpoint | Best for |
 |---|---|---|
-| `mimo-v2.6-flash-free` | `/v1/chat/completions` | Fast default pick |
+| `mimo-v2.6-flash-free` | `/v1/chat/completions` | Default pick — fast, sharp |
 | `mimo-v2.5-free` | `/v1/chat/completions` | Previous generation |
-| `nemotron-3-ultra-free` | `/v1/chat/completions` | Largest Nemotron 3 |
-| `nemotron-3.5-lightning-free` | `/v1/chat/completions` | Low latency |
+| `nemotron-3-ultra-free` | `/v1/chat/completions` | Deepest Nemotron reasoning |
+| `nemotron-3.5-lightning-free` | `/v1/chat/completions` | Low-latency answers |
 | `ling-3.0-flash-fin-free` | `/v1/chat/completions` | Finance-tuned flash |
-| `big-pickle` | `/v1/chat/completions` | Stealth model |
-| `muse-spark-1.3-contributor-free` | `/v1/responses` | Meta, multimodal |
+| `big-pickle` | `/v1/chat/completions` | The stealth model everyone asks about |
+| `muse-spark-1.3-contributor-free` | `/v1/responses` | Meta multimodal flagship |
 | `muse-spark-1.2-contributor-free` | `/v1/responses` | Previous generation |
-| `jev-1.13-free` | `/v1/chat/completions` | Listed as free |
+| `jev-1.13-free` | `/v1/chat/completions` | Listed free tier |
 
-Free-model IDs rotate (OpenCode marks them "limited time"), so check
-`/v1/models` for the current set. Paid Zen models work through the same
-endpoints with no special handling.
+Free IDs rotate (OpenCode marks them "limited time") — `/v1/models` always
+shows the current set. Paid Zen models work through the same endpoints once
+you set `OPENCODE_API_KEY`.
 
-## How it works
+## Under the hood
 
 ```
-your client  ── plain OpenAI request ──►  proxy  ── OpenCode-identified,
-                                          streaming + tools ──►  Zen
+your client ── plain OpenAI request ──► proxy ── OpenCode-identified,
+                                         streaming + tools ──► Zen ($0)
 ```
 
-Per request the proxy: attaches `User-Agent: opencode/...` plus
-`x-opencode-*` / `x-session-*` headers from `session.json`; ensures
-`stream: true` upstream (re-assembling SSE when you asked non-streaming);
-and injects genuine OpenCode tool definitions when yours are missing.
+Per request the proxy attaches `User-Agent: opencode/...` plus
+`x-opencode-*` / `x-session-*` headers from `session.json`, forces
+`stream: true` upstream (re-assembling SSE when you asked non-streaming),
+and injects genuine OpenCode tool definitions when yours are missing. About
+100 lines of readable Node — go look.
 
 ## FAQ
 
-**Is this affiliated with OpenCode?** No. Independent project, not built,
-endorsed, or supported by the OpenCode team. Free-tier availability and
-rules are theirs and can change anytime.
+**Really no key, no signup?** Really. Free models ride the public tier,
+exactly like a fresh `opencode` install. A key (`OPENCODE_API_KEY`) is only
+ever needed for *paid* Zen models.
 
-**Do I need a key?** No — not for free models. The proxy uses the public
-free tier, exactly like a fresh `opencode` install with no key configured.
-Set `OPENCODE_API_KEY` only if you want paid Zen models through the same
-endpoint.
+**Is this affiliated with OpenCode?** No — independent project, not built
+or endorsed by them. Free-tier availability and rules are theirs and can
+change anytime; star and enjoy while it lasts.
 
-**It worked, now I get `FreeTierError`?** Your session identity expired —
-repeat the 30-second capture step.
+**It worked, now `FreeTierError`?** Session identity expired. Repeat the
+30-second capture step.
 
-**Will the model call tools I didn't ask for?** No. When you send no tools
-the proxy pins `tool_choice: "none"`, so you get plain text.
+**Will models call tools I never sent?** No. Missing tools are injected
+with `tool_choice: "none"`, so you get clean text. Send your own tools and
+they pass straight through.
+
+**Can I run it for my whole team?** Host it on your LAN, put your key in
+its env for paid models, and hand out the base URL. Clients still need no
+keys of their own.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). If free inference saved you money, a star is
+appreciated.
