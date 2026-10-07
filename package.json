@@ -1,0 +1,41 @@
+{
+  "name": "opencode-proxy",
+  "version": "1.0.0",
+  "description": "Use OpenCode Zen's free models anywhere — a local OpenAI-compatible proxy for mimo, nemotron, ling, big-pickle and muse-spark free tiers",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zkygwxf-bot/opencode-proxy.git"
+  },
+  "homepage": "https://github.com/zkygwxf-bot/opencode-proxy#readme",
+  "keywords": [
+    "opencode",
+    "openai-compatible",
+    "openai-proxy",
+    "free-llm",
+    "free-api",
+    "free-ai-models",
+    "llm-proxy",
+    "llm-gateway",
+    "self-hosted",
+    "local-llm",
+    "proxy",
+    "llm",
+    "zen",
+    "mimo",
+    "nemotron",
+    "big-pickle",
+    "muse-spark",
+    "chat-completions",
+    "ai-agents",
+    "coding-assistant"
+  ],
+  "scripts": {
+    "start": "node proxy.mjs",
+    "capture": "node capture.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

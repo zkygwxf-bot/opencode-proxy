@@ -1,0 +1,10 @@
+{
+  "userAgent": "opencode/latest/2.0.12/cli",
+  "xOpencodeClient": "cli",
+  "xOpencodeOrgId": "wrk_YOUR_ORG_ID",
+  "xOpencodeProject": "YOUR_PROJECT_HASH",
+  "xOpencodeSession": "ses_YOUR_SESSION_ID",
+  "xSessionId": "ses_YOUR_SESSION_ID",
+  "xSessionAffinity": "ses_YOUR_SESSION_ID",
+  "capturedAt": "2026-09-23T00:00:00.000Z"
+}
