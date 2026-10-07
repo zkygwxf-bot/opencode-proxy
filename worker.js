@@ -741,6 +741,202 @@ function chatToResponsesInput(messages) {
   return input;
 }
 
+// v47: Responses API 请求体 → Chat Completions 请求体（反向翻译）。
+// 用于 /v1/responses 收到非 muse-spark 模型（mimo/longcat）时：
+// 上游 /zen/v1/responses 只支持 muse-spark，这些模型要走 /zen/v1/chat/completions。
+function responsesToChatBody(body) {
+  const messages = [];
+  // instructions → system 消息
+  if (body.instructions) {
+    messages.push({ role: "system", content: body.instructions });
+  }
+  // input 数组 → chat messages
+  for (const item of body.input || []) {
+    if (!item || typeof item !== "object") continue;
+    if (item.type === "function_call_output") {
+      messages.push({
+        role: "tool",
+        tool_call_id: item.call_id || item.id || "",
+        content:
+          typeof item.output === "string"
+            ? item.output
+            : JSON.stringify(item.output ?? ""),
+      });
+      continue;
+    }
+    if (item.type === "function_call") {
+      // 上一轮 assistant 的工具调用 → 转成 assistant 消息带 tool_calls
+      messages.push({
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: item.call_id || item.id || `call_resp_${messages.length}`,
+            type: "function",
+            function: {
+              name: item.name || "",
+              arguments:
+                typeof item.arguments === "string"
+                  ? item.arguments
+                  : JSON.stringify(item.arguments ?? {}),
+            },
+          },
+        ],
+      });
+      continue;
+    }
+    // 普通消息：{role, content}
+    const role = item.role || "user";
+    let content = "";
+    if (typeof item.content === "string") {
+      content = item.content;
+    } else if (Array.isArray(item.content)) {
+      const parts = item.content
+        .map((p) => {
+          if (typeof p === "string") return p;
+          if (p.type === "input_text") return p.text || "";
+          if (p.type === "input_image") {
+            const url = p.image_url || "";
+            return url ? { type: "image_url", image_url: { url } } : "";
+          }
+          return p.text || "";
+        })
+        .filter(Boolean);
+      const hasImage = parts.some((c) => typeof c === "object");
+      content = hasImage ? parts : parts.join("");
+    }
+    messages.push({ role, content });
+  }
+  const chatBody = {
+    model: body.model,
+    messages,
+    stream: true, // 上游免费层只认流式
+    store: false,
+  };
+  // 工具：Responses 格式 → Chat 格式
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    chatBody.tools = body.tools.map((t) => {
+      if (t.type === "function") {
+        return {
+          type: "function",
+          function: {
+            name: t.name || "",
+            description: t.description || "",
+            parameters: t.parameters || { type: "object", properties: {} },
+          },
+        };
+      }
+      return t;
+    });
+  }
+  if (body.tool_choice !== undefined) chatBody.tool_choice = body.tool_choice;
+  applySamplingParams(chatBody, body);
+  if (body.max_output_tokens !== undefined)
+    chatBody.max_tokens = body.max_output_tokens;
+  return chatBody;
+}
+
+// v47: Anthropic Messages 请求体 → Chat Completions 请求体。
+// 用于 /v1/messages 收到非 muse-spark 模型时走 chat 上游。
+function anthropicToChatBody(body) {
+  const messages = [];
+  if (body.system) {
+    const sysText =
+      typeof body.system === "string"
+        ? body.system
+        : Array.isArray(body.system)
+          ? body.system.map((p) => p.text || "").join("")
+          : "";
+    if (sysText) messages.push({ role: "system", content: sysText });
+  }
+  for (const m of body.messages || []) {
+    const role = m.role === "assistant" ? "assistant" : "user";
+    const content = m.content;
+    if (typeof content === "string") {
+      messages.push({ role, content });
+      continue;
+    }
+    if (Array.isArray(content)) {
+      const parts = [];
+      const toolCalls = [];
+      const toolResults = [];
+      for (const p of content) {
+        if (p.type === "text") parts.push(p.text || "");
+        else if (p.type === "image") {
+          const src = p.source || {};
+          const url =
+            src.type === "url"
+              ? src.url
+              : src.type === "base64"
+                ? `data:${src.media_type};base64,${src.data}`
+                : "";
+          if (url) parts.push({ type: "image_url", image_url: { url } });
+        } else if (p.type === "tool_use") {
+          toolCalls.push({
+            id: p.id || `call_anth_${toolCalls.length}`,
+            type: "function",
+            function: {
+              name: p.name || "",
+              arguments:
+                typeof p.input === "string"
+                  ? p.input
+                  : JSON.stringify(p.input ?? {}),
+            },
+          });
+        } else if (p.type === "tool_result") {
+          toolResults.push({
+            role: "tool",
+            tool_call_id: p.tool_use_id || "",
+            content:
+              typeof p.content === "string"
+                ? p.content
+                : JSON.stringify(p.content ?? ""),
+          });
+        }
+      }
+      if (toolResults.length > 0) {
+        messages.push(...toolResults);
+      } else {
+        const msg = {
+          role,
+          content:
+            parts.length === 1 && typeof parts[0] === "string" ? parts[0] : parts,
+        };
+        if (toolCalls.length > 0) msg.tool_calls = toolCalls;
+        messages.push(msg);
+      }
+    }
+  }
+  const chatBody = {
+    model: body.model,
+    messages,
+    stream: true,
+    store: false,
+  };
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    chatBody.tools = body.tools.map((t) => ({
+      type: "function",
+      function: {
+        name: t.name || "",
+        description: t.description || "",
+        parameters: t.input_schema || { type: "object", properties: {} },
+      },
+    }));
+  }
+  if (body.tool_choice !== undefined) {
+    const tc = body.tool_choice;
+    if (typeof tc === "string") chatBody.tool_choice = tc;
+    else if (tc.type === "auto") chatBody.tool_choice = "auto";
+    else if (tc.type === "any") chatBody.tool_choice = "required";
+    else if (tc.type === "tool")
+      chatBody.tool_choice = { type: "function", function: { name: tc.name } };
+  }
+  if (body.temperature !== undefined) chatBody.temperature = body.temperature;
+  if (body.top_p !== undefined) chatBody.top_p = body.top_p;
+  if (body.max_tokens !== undefined) chatBody.max_tokens = body.max_tokens;
+  return chatBody;
+}
+
 // ---- responses SSE -> object ----
 function sseToResponse(sseText, fallbackModel) {
   let id = `resp-proxy-${Date.now()}`;
@@ -1201,6 +1397,216 @@ async function streamResponsesToAnthropic(upstream, emit, model) {
   ev("message_stop", { type: "message_stop" });
 }
 
+// v47: Chat SSE → Responses SSE 流式转换。
+// 用于 /v1/responses 收到非 muse-spark 模型时：上游走 chat，下游要 Responses 格式。
+async function streamChatToResponses(upstream, emit, model, timing) {
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const respId = `resp-proxy-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  let textParts = [];
+  let toolCalls = []; // [{id, name, arguments}]
+  let usage = null;
+  let hasEmittedCreated = false;
+
+  const emitEvent = (obj) => emit(`data: ${JSON.stringify(obj)}\n\n`);
+
+  // response.created 先发
+  emitEvent({
+    type: "response.created",
+    response: { id: respId, object: "response", created, model, status: "in_progress", output: [] },
+  });
+  hasEmittedCreated = true;
+  void hasEmittedCreated;
+
+  // output_text 的 item 占位（Responses 要求先有 response.output_item.added）
+  let itemAdded = false;
+  const ensureItem = () => {
+    if (!itemAdded) {
+      itemAdded = true;
+      emitEvent({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "message", id: `msg_${respId}`, role: "assistant", content: [] },
+      });
+      emitEvent({
+        type: "response.content_part.added",
+        item_id: `msg_${respId}`,
+        output_index: 0,
+        content_index: 0,
+        part: { type: "output_text", text: "", annotations: [] },
+      });
+    }
+  };
+
+  const toolArgBuffers = new Map(); // index -> {id, name, args}
+  let finishReason = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop();
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const payload = t.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let obj;
+      try { obj = JSON.parse(payload); } catch { continue; }
+      const choice = obj.choices?.[0];
+      if (!choice) {
+        if (obj.usage) usage = obj.usage;
+        continue;
+      }
+      const delta = choice.delta || {};
+      // 文本增量
+      if (typeof delta.content === "string" && delta.content) {
+        ensureItem();
+        textParts.push(delta.content);
+        if (timing && !timing.firstTokenAt) timing.firstTokenAt = Date.now();
+        emitEvent({ type: "response.output_text.delta", item_id: `msg_${respId}`, output_index: 0, content_index: 0, delta: delta.content });
+      }
+      // reasoning 增量（mimo/longcat 一般没有，有也透一下）
+      if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
+        emitEvent({ type: "response.reasoning_summary_text.delta", item_id: `msg_${respId}`, output_index: 0, summary_index: 0, delta: delta.reasoning_content });
+      }
+      // 工具调用增量
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          let entry = toolArgBuffers.get(idx);
+          if (!entry) {
+            entry = { id: tc.id || `call_chat2resp_${idx}`, name: tc.function?.name || "", args: "" };
+            toolArgBuffers.set(idx, entry);
+          }
+          if (tc.function?.name) entry.name = tc.function.name;
+          if (typeof tc.function?.arguments === "string") entry.args += tc.function.arguments;
+        }
+      }
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      if (obj.usage) usage = obj.usage;
+    }
+  }
+  // 收尾：function_call items
+  for (const [, entry] of toolArgBuffers) {
+    if (!entry.name) continue;
+    toolCalls.push({ id: entry.id, name: entry.name, arguments: entry.args });
+    const outIdx = 1 + toolCalls.length - 1;
+    emitEvent({
+      type: "response.output_item.added",
+      output_index: outIdx,
+      item: { type: "function_call", id: entry.id, call_id: entry.id, name: entry.name, arguments: entry.args },
+    });
+    emitEvent({ type: "response.output_item.done", output_index: outIdx, item: { type: "function_call", id: entry.id, call_id: entry.id, name: entry.name, arguments: entry.args } });
+  }
+  // 文本 part 收尾
+  if (itemAdded) {
+    const fullText = textParts.join("");
+    emitEvent({ type: "response.output_text.done", item_id: `msg_${respId}`, output_index: 0, content_index: 0, text: fullText });
+    emitEvent({ type: "response.content_part.done", item_id: `msg_${respId}`, output_index: 0, content_index: 0, part: { type: "output_text", text: fullText, annotations: [] } });
+    emitEvent({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: `msg_${respId}`, role: "assistant", content: [{ type: "output_text", text: fullText, annotations: [] }] } });
+  }
+  // response.completed
+  const output = [];
+  if (itemAdded) {
+    output.push({ type: "message", id: `msg_${respId}`, role: "assistant", content: [{ type: "output_text", text: textParts.join(""), annotations: [] }] });
+  }
+  for (const tc of toolCalls) {
+    output.push({ type: "function_call", id: tc.id, call_id: tc.id, name: tc.name, arguments: tc.arguments });
+  }
+  const respUsage = usage ? {
+    input_tokens: usage.prompt_tokens,
+    output_tokens: usage.completion_tokens,
+    total_tokens: usage.total_tokens,
+  } : null;
+  if (timing && respUsage) {
+    timing.usage = { prompt_tokens: respUsage.input_tokens, completion_tokens: respUsage.output_tokens, total_tokens: respUsage.total_tokens };
+  }
+  emitEvent({
+    type: "response.completed",
+    response: { id: respId, object: "response", created, model, status: "completed", output, usage: respUsage },
+  });
+  return { text: textParts.join(""), toolCalls, finishReason };
+}
+
+// v47: Chat SSE → Anthropic SSE 流式转换。
+// 用于 /v1/messages 收到非 muse-spark 模型时：上游走 chat，下游要 Anthropic 格式。
+async function streamChatToAnthropic(upstream, emit, model, timing) {
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const msgId = `msg_proxy_${Date.now()}`;
+  let textParts = [];
+  let toolCalls = [];
+  let usage = null;
+  const emitEvent = (obj) => emit(`data: ${JSON.stringify(obj)}\n\n`);
+  emitEvent({ type: "message_start", message: { id: msgId, type: "message", role: "assistant", model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+  emitEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+  const toolArgBuffers = new Map();
+  let finishReason = null;
+  let blockIndex = 1;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop();
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const payload = t.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let obj;
+      try { obj = JSON.parse(payload); } catch { continue; }
+      const choice = obj.choices?.[0];
+      if (!choice) { if (obj.usage) usage = obj.usage; continue; }
+      const delta = choice.delta || {};
+      if (typeof delta.content === "string" && delta.content) {
+        textParts.push(delta.content);
+        if (timing && !timing.firstTokenAt) timing.firstTokenAt = Date.now();
+        emitEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: delta.content } });
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          let entry = toolArgBuffers.get(idx);
+          if (!entry) {
+            entry = { id: tc.id || `toolu_${idx}`, name: tc.function?.name || "", args: "" };
+            toolArgBuffers.set(idx, entry);
+            emitEvent({ type: "content_block_start", index: blockIndex, content_block: { type: "tool_use", id: entry.id, name: entry.name, input: {} } });
+            entry.blockIndex = blockIndex++;
+          }
+          if (tc.function?.name) entry.name = tc.function.name;
+          if (typeof tc.function?.arguments === "string") {
+            entry.args += tc.function.arguments;
+            emitEvent({ type: "content_block_delta", index: entry.blockIndex, delta: { type: "input_json_delta", partial_json: tc.function.arguments } });
+          }
+        }
+      }
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      if (obj.usage) usage = obj.usage;
+    }
+  }
+  emitEvent({ type: "content_block_stop", index: 0 });
+  for (const [, entry] of toolArgBuffers) {
+    if (!entry.name) continue;
+    toolCalls.push(entry);
+    emitEvent({ type: "content_block_stop", index: entry.blockIndex });
+  }
+  const stopReason = toolCalls.length > 0 ? "tool_use" : "end_turn";
+  const outUsage = {
+    input_tokens: usage?.prompt_tokens ?? 0,
+    output_tokens: usage?.completion_tokens ?? 0,
+  };
+  if (timing) timing.usage = { prompt_tokens: outUsage.input_tokens, completion_tokens: outUsage.output_tokens, total_tokens: (usage?.total_tokens ?? outUsage.input_tokens + outUsage.output_tokens) };
+  emitEvent({ type: "message_delta", delta: { stop_reason: stopReason }, usage: { output_tokens: outUsage.output_tokens } });
+  emitEvent({ type: "message_stop" });
+  return { text: textParts.join(""), toolCalls, finishReason };
+}
+
 // ---- main handler ----
 export default {
   async fetch(request) {
@@ -1426,6 +1832,37 @@ export default {
       // v34/v37/v40/v41: 思考参数标准化（spark 默认 medium）
       normalizeThinkingParams(body);
       const clientWantsStream = body.stream !== false;
+      const isSpark = typeof body.model === "string" && body.model.startsWith("muse-spark-");
+      // v47: 非 spark 模型（mimo/longcat）上游 /responses 不支持，转 chat
+      if (!isSpark) {
+        const chatBody = responsesToChatBody(body);
+        ensureChatTools(chatBody);
+        const up = await fetch(UPSTREAM + "/zen/v1/chat/completions", {
+          method: "POST",
+          headers: upstreamHeaders(),
+          body: JSON.stringify(chatBody),
+        });
+        if (!clientWantsStream) {
+          const sseText = await up.text();
+          const chatObj = sseToChatCompletion(sseText, body.model || "unknown");
+          // chat → Responses
+          const msg = chatObj.choices?.[0]?.message || {};
+          const text = typeof msg.content === "string" ? msg.content : "";
+          const output = [];
+          if (text) output.push({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
+          for (const tc of msg.tool_calls || []) {
+            output.push({ type: "function_call", call_id: tc.id || "", id: tc.id || "", name: tc.function?.name || "", arguments: tc.function?.arguments || "{}" });
+          }
+          return jsonResponse({ id: `resp-proxy-${Date.now()}`, object: "response", status: "completed", model: body.model, output,
+            usage: chatObj.usage ? { input_tokens: chatObj.usage.prompt_tokens, output_tokens: chatObj.usage.completion_tokens, total_tokens: chatObj.usage.total_tokens } : null }, up.status);
+        }
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const enc = new TextEncoder();
+        streamChatToResponses(up, (c) => writer.write(enc.encode(c)), body.model || "unknown", null)
+          .then(() => writer.close()).catch(() => { try { writer.close(); } catch {} });
+        return new Response(readable, { status: up.status, headers: { "content-type": "text/event-stream" } });
+      }
       ensureResponsesTools(body);
       const up = await fetch(UPSTREAM + "/zen/v1/responses", {
         method: "POST",
@@ -1453,6 +1890,38 @@ export default {
         requestForceSearch = true;
       }
       const clientWantsStream = body.stream === true;
+      const isSpark = typeof body.model === "string" && body.model.startsWith("muse-spark-");
+      // v47: 非 spark 模型（mimo/longcat）转 chat 走 chat 上游
+      if (!isSpark) {
+        const chatBody = anthropicToChatBody(body);
+        ensureChatTools(chatBody);
+        const up = await fetch(UPSTREAM + "/zen/v1/chat/completions", {
+          method: "POST",
+          headers: upstreamHeaders(),
+          body: JSON.stringify(chatBody),
+        });
+        if (clientWantsStream) {
+          const { readable, writable } = new TransformStream();
+          const writer = writable.getWriter();
+          const enc = new TextEncoder();
+          streamChatToAnthropic(up, (c) => writer.write(enc.encode(c)), body.model || "unknown", null)
+            .then(() => writer.close()).catch(() => { try { writer.close(); } catch {} });
+          return new Response(readable, { status: up.status, headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" } });
+        }
+        const sseText = await up.text();
+        const chatObj = sseToChatCompletion(sseText, body.model || "unknown");
+        const msg = chatObj.choices?.[0]?.message || {};
+        const content = [];
+        if (typeof msg.content === "string" && msg.content) content.push({ type: "text", text: msg.content });
+        for (const tc of msg.tool_calls || []) {
+          let input = {};
+          try { input = JSON.parse(tc.function?.arguments || "{}"); } catch {}
+          content.push({ type: "tool_use", id: tc.id || "", name: tc.function?.name || "", input });
+        }
+        return jsonResponse({ id: `msg_proxy_${Date.now()}`, type: "message", role: "assistant", model: body.model,
+          content, stop_reason: content.some(c => c.type === "tool_use") ? "tool_use" : "end_turn",
+          usage: { input_tokens: chatObj.usage?.prompt_tokens ?? 0, output_tokens: chatObj.usage?.completion_tokens ?? 0 } }, up.status);
+      }
       const responsesBody = anthropicToResponsesBody(body);
       const up = await fetch(UPSTREAM + "/zen/v1/responses", {
         method: "POST",
