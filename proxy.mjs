@@ -3296,6 +3296,8 @@ const server = http.createServer((req, res) => {
       // 必须在 ensure* 之前设置 requestForceSearch（它们会读取本标志）。
       // v45: 所有接口都认 -search 后缀（无条件开启搜索）；Response API 的
       // RikkaHub"模型搜索"开关（v36 原生转换）同样开启。都不选则不注入（v42）。
+      // v55: 用局部变量保存原始模型名供日志使用，不污染 body 对象
+      const origModelForLog = body.model;
       if (typeof body.model === "string" && body.model.endsWith("-search")) {
         body.model = body.model.slice(0, -"-search".length);
         requestForceSearch = true;
@@ -3526,7 +3528,8 @@ const server = http.createServer((req, res) => {
             ? body.input.length
             : "?";
         // forceSearch 时在模型名后标注 🔍，让用户一眼看出搜索已启用
-        const logModel = forceSearch ? `${body?.model} 🔍` : body?.model;
+        // v55: 用原始模型名（origModelForLog），显示完整名称
+        const logModel = forceSearch ? `${origModelForLog} 🔍` : origModelForLog;
         zenStartLog(seq, logModel, msgCount, clientTag);
       }
       const upstream = await fetch(UPSTREAM + upstreamPath, {
