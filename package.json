@@ -1,6 +1,6 @@
 {
   "name": "opencode-proxy",
-  "version": "52.0.0",
+  "version": "53.0.0",
   "description": "Use OpenCode Zen's free models anywhere \u2014 a local OpenAI-compatible proxy for mimo, nemotron, ling, big-pickle and muse-spark free tiers",
   "type": "module",
   "license": "MIT",
