@@ -1887,6 +1887,19 @@ function sseToChatCompletion(sseText, fallbackModel) {
   const reasoning = reasoningParts.join("");
   const message = { role: "assistant", content };
   if (reasoning) message.reasoning_content = reasoning;
+  // v56: 清理被转义坏的 shell 参数（如 /\"echo ok\"/ → echo ok）
+  for (const tc of toolCalls) {
+    try {
+      const args = JSON.parse(tc.function.arguments || "{}");
+      if (args.command && typeof args.command === "string") {
+        // 去掉 /\" 前缀和 \"/ 后缀
+        args.command = args.command.replace(/^\/\\"/, "").replace(/\\"\/$/, "");
+        // 去掉多余的转义引号
+        args.command = args.command.replace(/\\"/g, '"');
+        tc.function.arguments = JSON.stringify(args);
+      }
+    } catch {}
+  }
   if (toolCalls.length) message.tool_calls = toolCalls;
   return {
     id,
