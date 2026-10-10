@@ -622,7 +622,8 @@ function ensureResponsesTools(body) {
 function applySamplingParams(target, src) {
   const maxOut =
     src.max_output_tokens ?? src.max_tokens ?? src.max_completion_tokens;
-  if (maxOut) target.max_output_tokens = maxOut;
+  // v50修复：上游要求 max_output_tokens >= 16
+  if (maxOut) target.max_output_tokens = Math.max(16, maxOut);
   for (const k of [
     "temperature",
     "top_p",
@@ -754,8 +755,12 @@ function responsesToChatBody(body) {
   if (body.instructions) {
     messages.push({ role: "system", content: body.instructions });
   }
+  // input 为字符串 → 直接作为 user 消息（v50修复）
+  if (typeof body.input === "string" && body.input) {
+    messages.push({ role: "user", content: body.input });
+  }
   // input 数组 → chat messages
-  for (const item of body.input || []) {
+  for (const item of Array.isArray(body.input) ? body.input : []) {
     if (!item || typeof item !== "object") continue;
     if (item.type === "function_call_output") {
       messages.push({
