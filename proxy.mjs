@@ -3534,6 +3534,8 @@ const server = http.createServer((req, res) => {
         const logModel = forceSearch ? `${body?._logModel || body?.model} 🔍` : (body?._logModel || body?.model);
         zenStartLog(seq, logModel, msgCount, clientTag);
       }
+      // v53: 删除内部日志字段，避免上游报 unknown parameter
+      delete body._logModel;
       const upstream = await fetch(UPSTREAM + upstreamPath, {
         method: req.method,
         headers,
