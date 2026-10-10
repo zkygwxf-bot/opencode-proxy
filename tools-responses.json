@@ -176,24 +176,24 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "path": {
+        "filePath": {
           "type": "string",
-          "description": "File or directory to read"
+          "description": "The absolute path to the file or directory to read"
         },
         "offset": {
           "type": "integer",
           "minimum": 0,
-          "description": "The line or directory entry to start reading from (1-based)"
+          "description": "The line number to start reading from (1-indexed)"
         },
         "limit": {
           "type": "integer",
           "minimum": 0,
           "maximum": 2000,
-          "description": "The maximum number of lines or directory entries to read (defaults to 2000)"
+          "description": "The maximum number of lines to read (defaults to 2000)"
         }
       },
       "required": [
-        "path"
+        "filePath"
       ],
       "additionalProperties": false
     },
@@ -208,20 +208,16 @@
       "properties": {
         "command": {
           "type": "string",
-          "description": "Shell command string to execute"
+          "description": "The command to execute"
         },
         "workdir": {
           "type": "string",
-          "description": "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead."
+          "description": "The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands."
         },
         "timeout": {
           "type": "integer",
           "minimum": 0,
-          "description": "Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to 120000 for foreground commands. Background commands have no timeout by default."
-        },
-        "background": {
-          "type": "boolean",
-          "description": "Run the command in the background and return immediately (useful for dev servers and long-running builds). You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion."
+          "description": "Optional timeout in milliseconds"
         }
       },
       "required": [
