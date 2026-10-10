@@ -65,10 +65,10 @@ function shortModel(m) {
   if (!m || typeof m !== "string") return "unknown";
   return m;
 }
-// 时钟时间：09:30:37，用手机本地时区
+// 时钟时间：10-10 09:30:37，用手机本地时区（带日期，跨夜跑能分清）
 function fmtClock(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 // 调用方 IP：把 ::ffff:127.0.0.1 这类 IPv6 映射还原成 IPv4；拿不到时返回 "?"
 function fmtIP(addr) {
