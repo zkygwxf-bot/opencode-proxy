@@ -643,8 +643,9 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
   const normalizeUsage = (u) => {
     if (!u || typeof u !== "object") return null;
     // 缺字段时保留 undefined（日志显示"?"），不要用 0 冒充——0 会误导成"没花 token"
-    const input = u.input_tokens;
-    const output = u.output_tokens;
+    // 兼容两种格式：Anthropic(input_tokens/output_tokens) 和 OpenAI(prompt_tokens/completion_tokens)
+    const input = u.input_tokens ?? u.prompt_tokens;
+    const output = u.output_tokens ?? u.completion_tokens;
     noteCached(u.input_tokens_details?.cached_tokens);
     return {
       prompt_tokens: input,
