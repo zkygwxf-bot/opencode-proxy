@@ -3102,6 +3102,9 @@ const server = http.createServer((req, res) => {
     // 报"异步任务异常：clientWantsStream is not defined"。
     let body = null;
     let clientWantsStream = false;
+    // v57: 日志用原始模型名（-search 剥离前）。try 外声明，后面开始行/报错行都能用；
+    // 局部变量，绝不挂到 body 上——v53 曾把 _logModel 塞进 body 发给上游导致 400。
+    let origModel = null;
     res.on("close", () => {
       if (!res.writableEnded) {
         clientGone = true;
@@ -3243,6 +3246,9 @@ const server = http.createServer((req, res) => {
       } catch {
         return sendErrorJson(res, 400, "Invalid JSON body");
       }
+      // v57: 日志用原始模型名（-search 后缀剥离前用户实际选的那个）。
+      // 只读局部变量 origModel，body 本体一个字符都不加。
+      origModel = body?.model ?? null;
       // --- 思考参数规范化（路径相关） ---
       // 上游 /zen/v1/responses 只认 reasoning: {effort, summary} 形状，
       // 顶层 reasoning_effort 直接报 unknown parameter（v33 踩过坑）。
@@ -3538,8 +3544,10 @@ const server = http.createServer((req, res) => {
           : Array.isArray(body?.input)
             ? body.input.length
             : "?";
-        // forceSearch 时在模型名后标注 🔍，让用户一眼看出搜索已启用
-        const logModel = forceSearch ? `${body?.model} 🔍` : body?.model;
+        // forceSearch 时在模型名后标注 🔍，让用户一眼看出搜索已启用。
+        // 用 origModel（剥离 -search 后缀之前的原始名），跟 RikkaHub 里选的一致。
+        const _lm = origModel ?? body?.model;
+        const logModel = forceSearch ? `${_lm} 🔍` : _lm;
         zenStartLog(seq, logModel, msgCount, clientTag);
       }
       const upstream = await fetch(UPSTREAM + upstreamPath, {
@@ -3568,8 +3576,9 @@ const server = http.createServer((req, res) => {
 
       res.writeHead(upstream.status, { "content-type": "application/json" });
         // 上游非 200：补一行结果，开始行不悬空（之前这里直接 return，无配对行）
+        // v57: 用 origModel（原始名），跟开始行一致
         console.log(
-          `#${seq} ✕ 上游${upstream.status} · ${shortModel(body?.model)}`
+          `#${seq} ✕ 上游${upstream.status} · ${shortModel(origModel ?? body?.model)}`
         );
         return res.end(
           JSON.stringify(normalizeUpstreamError(upstream.status, text))
