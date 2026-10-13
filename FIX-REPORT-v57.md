@@ -52,6 +52,11 @@
 - **位置**：`proxy.mjs:3352`
 - **修复**：空串直接 400 拒绝
 
+### B14. /v1/responses + 非 spark 非流式 usage 缺回退（测试发现，已修）
+- **位置**：`proxy.mjs:4196`
+- **现象**：mock 测试 Q1 发现，`chat → Responses` 组装分支 `input_tokens: chatObj.usage.prompt_tokens` 无回退
+- **修复**：加 `?? chatObj.usage.input_tokens` / `?? chatObj.usage.output_tokens` 回退
+
 ## 二、审计发现但未修复（轻微，记录为已知问题）
 
 以下为代码审计员发现、经评估暂不修复的轻微问题（触发概率极低或属防御性缺失，修的风险大于收益）：
@@ -101,7 +106,9 @@
 | 15 | CORS/OPTIONS 处理 | setCorsHeaders + 204 响应 | ✅ 通过 |
 | 16 | 完整 diff 复核 | cfa5396..HEAD 全部新增行 | ✅ 通过，无意外改动 |
 | 17 | 代码审计员全量审计 | 4676 行通读，17 项发现 | ✅ 完成，2 严重+11 轻微已修，4 轻微记录为已知问题 |
-| 18-20 | （待测试工程师 mock 测试回报后补充） | | |
+| 18 | mock 上游 27 用例矩阵测试 | 3 接口×流式/非流式×工具/推理/异常 | ✅ 27/27 通过；发现 B14（已修） |
+| 19 | 并发 10 请求防串扰 | 5 搜索+5 普通混合 | ✅ 通过，requestForceSearch 无污染 |
+| 20 | -search 开关隔离 | 搜索只在 -search 启用；普通请求不搜索 | ✅ 通过（S1/S2/S3） |
 
 （待补充）
 

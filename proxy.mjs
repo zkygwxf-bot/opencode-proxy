@@ -4193,8 +4193,8 @@ const server = http.createServer((req, res) => {
               model: targetModel,
               output,
               usage: chatObj.usage ? {
-                input_tokens: chatObj.usage.prompt_tokens,
-                output_tokens: chatObj.usage.completion_tokens,
+                input_tokens: chatObj.usage.prompt_tokens ?? chatObj.usage.input_tokens,
+                output_tokens: chatObj.usage.completion_tokens ?? chatObj.usage.output_tokens,
                 total_tokens: chatObj.usage.total_tokens,
               } : null,
             };
