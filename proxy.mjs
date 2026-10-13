@@ -662,6 +662,9 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
     chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }])
   );
   const toolIndexes = new Map();
+  // v60：乱序缓冲——arguments delta 先于 output_item.added 到达时暂存，
+  // added 登记后再拼接进去；收尾时仍无匹配才 warn 丢弃
+  const orphanArgs = new Map(); // output_index -> 累积的 arguments 分片
   let toolCount = 0;
   let hasTools = false;
   let doneEmitted = false;
@@ -792,6 +795,11 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
             };
             intercepted.push(entry);
             interceptedByIndex.set(obj.output_index, entry);
+            // v60：乱序到达的孤儿参数分片归位（added 迟到了）
+            if (orphanArgs.has(obj.output_index)) {
+              entry.arguments += orphanArgs.get(obj.output_index);
+              orphanArgs.delete(obj.output_index);
+            }
             return;
           }
           // 本轮已有拦截工具时：客户端工具调用暂不 emit（避免 finish 被抑制导致客户端 hang）。
@@ -827,6 +835,27 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
               },
             ])
           );
+          // v60：乱序到达的孤儿参数分片归位（added 迟到了），补发一个参数 chunk
+          if (orphanArgs.has(obj.output_index)) {
+            const lateArgs = orphanArgs.get(obj.output_index);
+            orphanArgs.delete(obj.output_index);
+            emit(
+              chunk([
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: idx,
+                        function: { arguments: lateArgs },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ])
+            );
+          }
         } else if (
           obj.type === "response.function_call_arguments.delta" &&
           typeof obj.delta === "string"
@@ -851,9 +880,11 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
               ])
             );
           } else if (!skippedClientIndices.has(obj.output_index)) {
-            // output_item.added 没登记就来了 arguments：参数无声丢失，客户端会收到空参数的工具调用
-            console.warn(
-              `function_call_arguments.delta 无对应 tool (output_index=${obj.output_index})，已丢弃`
+            // v60：output_item.added 没登记就来了 arguments：暂存而非丢弃，
+            // added 迟到时拼接进去（乱序保护）
+            orphanArgs.set(
+              obj.output_index,
+              (orphanArgs.get(obj.output_index) || "") + obj.delta
             );
           }
           // skippedClientIndices 中的是故意暂缓的，不打警告
@@ -882,6 +913,12 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
     try {
       reader.releaseLock();
     } catch {}
+  }
+  // v60：乱序到达但 added 始终没来的孤儿参数分片，收尾时 warn 丢弃
+  for (const [oi, args] of orphanArgs) {
+    console.warn(
+      `function_call_arguments.delta 孤儿分片无匹配 added (output_index=${oi})，收尾丢弃`
+    );
   }
   finish(hasTools ? "tool_calls" : "stop");
   return { intercepted };
@@ -989,7 +1026,11 @@ async function streamChatToResponses(upstream, emit, model, timing) {
   }
   // 收尾：function_call items
   for (const [, entry] of toolArgBuffers) {
-    if (!entry.name) continue;
+    if (!entry.name) {
+      // v60：上游流残缺（name 分片缺失）时尽力转发而非静默丢弃，
+      // 与 sseToChatCompletion 行为统一，客户端可据此报错排查
+      console.warn("chat→Responses 流式收尾：tool_call 缺 name，尽力转发");
+    }
     toolCalls.push({ id: entry.id, name: entry.name, arguments: entry.args });
     const outIdx = 1 + toolCalls.length - 1;
     emitEvent({
@@ -1325,6 +1366,11 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
   let thinkingOpen = false;
   let thinkingBlockIndex = -1;
   const toolBlocks = new Map();
+  // v60：已通过 delta 发过的 function_call（completed 兜底去重用）
+  const emittedToolCallIds = new Set();
+  // v60：乱序缓冲——arguments delta 先于 output_item.added 到达时暂存，
+  // added 登记后再拼接进去；收尾时仍无匹配才 warn 丢弃
+  const orphanArgs = new Map(); // output_index -> 累积的 arguments 分片
   let hasTools = false;
   // completed/incomplete 到达后置位，外层循环统一退出（原来是直接 return）
   let streamDone = false;
@@ -1408,10 +1454,16 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
         };
         intercepted.push(entry);
         heldTools.set(obj.output_index, entry);
+        // v60：乱序到达的孤儿参数分片归位（added 迟到了）
+        if (orphanArgs.has(obj.output_index)) {
+          entry.arguments += orphanArgs.get(obj.output_index);
+          orphanArgs.delete(obj.output_index);
+        }
         return;
       }
       const bi = blockIndex++;
       toolBlocks.set(obj.output_index, bi);
+      emittedToolCallIds.add(item.call_id || item.id);
       hasTools = true;
       closeThinking();
       closeText();
@@ -1425,6 +1477,18 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
           input: {},
         },
       });
+      // v60：乱序到达的孤儿参数分片归位（added 迟到了）
+      if (orphanArgs.has(obj.output_index)) {
+        ev("content_block_delta", {
+          type: "content_block_delta",
+          index: bi,
+          delta: {
+            type: "input_json_delta",
+            partial_json: orphanArgs.get(obj.output_index),
+          },
+        });
+        orphanArgs.delete(obj.output_index);
+      }
     } else if (
       obj.type === "response.function_call_arguments.delta" &&
       typeof obj.delta === "string"
@@ -1443,9 +1507,10 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
           delta: { type: "input_json_delta", partial_json: obj.delta },
         });
       } else {
-        // output_item.added 丢失/乱序时参数增量无处可去，打日志以便排查
-        console.warn(
-          `function_call_arguments.delta 无对应 tool block (output_index=${obj.output_index})，已丢弃`
+        // v60：output_item.added 丢失/乱序时暂存而非丢弃，added 迟到时拼接进去
+        orphanArgs.set(
+          obj.output_index,
+          (orphanArgs.get(obj.output_index) || "") + obj.delta
         );
       }
     } else if (
@@ -1453,16 +1518,53 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
       obj.type === "response.incomplete"
     ) {
       ensureStart();
-      // 兜底：上游 completed 直接带完整 output、没发过任何 delta 时，
+      // v60：乱序到达但 added 始终没来的孤儿参数分片，收尾时 warn 丢弃
+      for (const [oi, args] of orphanArgs) {
+        console.warn(
+          `function_call_arguments.delta 孤儿分片无匹配 added (output_index=${oi})，收尾丢弃`
+        );
+      }
+      orphanArgs.clear();
+      // v60 兜底A：上游 completed 直接带 function_call、此前无 delta 时，
+      // 补发一个完整 tool_use block（用 call_id 去重），不再静默吞掉
+      const toolsBeforeFallback = hasTools;
+      if (Array.isArray(obj.response?.output)) {
+        for (const item of obj.response.output) {
+          if (!item || typeof item !== "object" || item.type !== "function_call") continue;
+          const fbToolName = unprefixToolName(
+            typeof item.name === "string" ? item.name : "",
+            knownNames
+          );
+          if (interceptNames.has(fbToolName)) continue; // 拦截工具不转发给客户端
+          const fbCallId = item.call_id || item.id || `call_proxy_${++proxyCallSeq}`;
+          if (emittedToolCallIds.has(fbCallId)) continue; // 已通过 delta 发过
+          console.warn("上游 completed 直带 function_call（无 delta），已补发 tool_use block");
+          closeText();
+          const fbIdx = blockIndex++;
+          hasTools = true;
+          ev("content_block_start", {
+            type: "content_block_start",
+            index: fbIdx,
+            content_block: { type: "tool_use", id: fbCallId, name: fbToolName, input: {} },
+          });
+          if (typeof item.arguments === "string" && item.arguments) {
+            ev("content_block_delta", {
+              type: "content_block_delta",
+              index: fbIdx,
+              delta: { type: "input_json_delta", partial_json: item.arguments },
+            });
+          }
+          ev("content_block_stop", { type: "content_block_stop", index: fbIdx });
+          emittedToolCallIds.add(fbCallId);
+        }
+      }
+      // 兜底B：上游 completed 直接带完整 output、没发过任何 delta 时，
       // 从 output 里捞文本补发一个 text block，否则正文无声丢失
-      if (!textOpen && !hasTools && Array.isArray(obj.response?.output)) {
+      if (!textOpen && !toolsBeforeFallback && Array.isArray(obj.response?.output)) {
         let fbText = "";
         for (const item of obj.response.output) {
           if (!item || typeof item !== "object") continue;
-          if (item.type === "function_call") {
-            console.warn("上游 completed 直带 function_call（无 delta），暂不支持");
-            continue;
-          }
+          if (item.type === "function_call") continue; // 已在兜底A处理
           for (const c of item.content || []) {
             if (c.type === "output_text" && typeof c.text === "string")
               fbText += c.text;
@@ -1606,6 +1708,12 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
   // completed/incomplete 已正常结束：不再走兜底关闭，避免重复发 message_stop
   if (streamDone) return { intercepted, nextBlockIndex: blockIndex };
   // Stream ended without response.completed: close gracefully.
+  // v60：乱序到达但 added 始终没来的孤儿参数分片，收尾时 warn 丢弃
+  for (const [oi, args] of orphanArgs) {
+    console.warn(
+      `function_call_arguments.delta 孤儿分片无匹配 added (output_index=${oi})，收尾丢弃`
+    );
+  }
   ensureStart();
   closeText();
   for (const bi of toolBlocks.values()) {
