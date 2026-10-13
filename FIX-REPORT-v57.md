@@ -6,44 +6,68 @@
 
 ## 一、发现并修复的 Bug
 
-### B1. streamResponsesDirectWithIntercept usage 缺 OpenAI 命名回退（致命→已修）
-- **位置**：`proxy.mjs:1607`（原 1607-1614）
-- **现象**：Responses API 直通流式路径只读 `u.input_tokens`/`u.output_tokens`，上游偶发返回 OpenAI 式 `prompt_tokens`/`completion_tokens` 时，用量日志打印"入?·出?"
-- **触发条件**：用户主力模式（Muse Spark + Responses API）偶发
-- **修复**：`const _in = u.input_tokens ?? u.prompt_tokens; const _out = u.output_tokens ?? u.completion_tokens;`
-- **验证**：静态确认 + 待 mock 测试
+### B1. streamResponsesDirectWithIntercept usage 缺 OpenAI 命名回退（已修）
+- **位置**：`proxy.mjs:1607`
+- **现象**：Responses API 直通流式路径只读 `u.input_tokens`/`u.output_tokens`，上游偶发返回 OpenAI 式命名时用量日志打印"入?·出?"
+- **修复**：加 `?? u.prompt_tokens` / `?? u.completion_tokens` 回退
 
-### B2. sseToResponse usage 缺 OpenAI 命名回退（严重→已修）
-- **位置**：`proxy.mjs:1752`（非流式 Responses 组装）
-- **现象**：同 B1，上游返回 OpenAI 式 usage 时非流式路径用量为 undefined
-- **修复**：同 B1 的回退逻辑
-- **验证**：静态确认 + 待 mock 测试
+### B2-B5. 其余 4 处 usage 缺回退（已修，防御性）
+- `sseToResponse:1752`、`responseToChatCompletion:2831`、`responseToAnthropic:3024`、非 spark 转 chat 的 Anthropic 组装:4134
+- 全部加上双命名回退
 
-### B3. responseToChatCompletion usage 缺回退（轻微→已修，防御性）
-- **位置**：`proxy.mjs:2831`
-- **现象**：Responses→Chat 翻译时只读 input_tokens 命名
-- **修复**：加 `?? resp.usage.prompt_tokens` 回退
-- **验证**：静态确认（调用方 sseToResponse 已规范化，属防御性）
-
-### B4. responseToAnthropic usage 缺回退（轻微→已修，防御性）
-- **位置**：`proxy.mjs:3024`
-- **现象**：Responses→Anthropic 翻译时只读 input_tokens 命名
-- **修复**：加回退链 `?? resp.usage?.prompt_tokens ?? 0`
-- **验证**：静态确认
-
-### B5. 非 spark 模型转 chat 的 Anthropic usage 缺回退（轻微→已修，防御性）
-- **位置**：`proxy.mjs:4134`
-- **现象**：chatObj.usage 只读 prompt_tokens 命名
-- **修复**：加 `?? chatObj.usage?.input_tokens ?? 0` 回退
-- **验证**：静态确认
-
-### B6. anthropicToResponsesBodyWithNames 读模块级 requestForceSearch（隐患→已修）
+### B6. anthropicToResponsesBodyWithNames 读模块级 requestForceSearch（已修）
 - **位置**：`proxy.mjs:2971`
-- **现象**：函数内部直接读模块级变量，并发下理论上有污染风险（实际调用是同步的，当前安全，但属隐患）
-- **修复**：改为显式参数 `forceSearch`，调用处传入局部快照
-- **验证**：静态确认调用链同步；待并发压测
+- **修复**：改为显式 `forceSearch` 参数
 
-## 二、已验证安全、无需改动
+### B7. streamResponsesToAnthropic thinking/text block 交错协议违规（严重，已修）
+- **位置**：`proxy.mjs:1295-1345`
+- **现象**：reasoning delta 到达时直接开 thinking block，不先关 text；text 到达时不关 thinking。Anthropic SSE 要求 block 严格按序开闭，交错会导致客户端协议错误
+- **修复**：新增 `closeThinking()`；开 thinking 前 `closeText()`，开 text/tool 前 `closeThinking()`，流结束时关闭所有未关 block
+
+### B8. translateToChat 路径无代理工具拦截（严重，已修）
+- **位置**：`proxy.mjs:3446/3459`
+- **现象**：/v1/messages 或 /v1/responses + 非 spark 模型时，`ensureChatTools` 会注入 webfetch/websearch，但 `streamChatToAnthropic`/`streamChatToResponses` 无拦截逻辑，模型调用后无法本地执行，坏的 tool_call 透传给客户端
+- **修复**：`ensureChatTools` 加 `skipProxyTools` 参数，translateToChat 路径传入 true（伪装工具 read/shell 照常注入防 403）；-search 对非 spark 模型打日志说明暂不支持
+
+### B9. streamChatToResponses respUsage 缺回退（已修）
+- **位置**：`proxy.mjs:982`
+- **修复**：加 `?? usage.input_tokens` 回退
+
+### B10. sseToChatCompletion 稀疏 tool_calls 索引产生 null（已修）
+- **位置**：`proxy.mjs:1913`
+- **现象**：上游 tool_calls index 不连续时数组空洞，JSON 序列化成 null 发给客户端
+- **修复**：`toolCalls.filter(Boolean)`
+
+### B11. v56 shell 参数清理过于粗暴（已修）
+- **位置**：`proxy.mjs:1916`
+- **现象**：对所有工具的 `command` 参数做全局反转义，会破坏客户端自有工具的合法转义
+- **修复**：仅对 `shell` 工具做清理
+
+### B12. translateToChat stop_reason 忽略 length（已修）
+- **位置**：`proxy.mjs:1074`（流式）、`proxy.mjs:4147`（非流式）
+- **现象**：`finish_reason: "length"` 被误报为 `end_turn`
+- **修复**：`length` → `max_tokens`
+
+### B13. 模型名恰为 "-search" 时 strip 后变空串（已修）
+- **位置**：`proxy.mjs:3352`
+- **修复**：空串直接 400 拒绝
+
+## 二、审计发现但未修复（轻微，记录为已知问题）
+
+以下为代码审计员发现、经评估暂不修复的轻微问题（触发概率极低或属防御性缺失，修的风险大于收益）：
+
+- **A3**：`hideSearchVariants` 死标志（`/r` 前缀注释与行为不符）——影响极小，改注释即可，暂不动
+- **A5**：`streamChatToResponses` reasoning 增量 item_id 挂错——仅影响 translateToChat+reasoning 组合，概率低
+- **A6**：`streamChatToAnthropic` 丢弃 reasoning——mimo/longcat 很少带 reasoning
+- **A7**：`streamChatDirectWithIntercept` 按名字首个分片判定拦截——上游极少拆分工具名
+- **A8**：全文件缺 `reasoning_tokens` 明细——不影响总量，仅看不到细分
+- **A10**：`response.function_call_arguments.done` 被忽略——当前上游走 delta，未观察到 done-only
+- **A11**：重复 `output_item.added` 无去重——正常网关不会重发
+- **A12**：`requestForceSearch` 默认参数设计脆弱——已验证 18 处显式传参+5 处同步读，当前安全
+- **A13**：`anthropicToChatBody` text+tool_result 混合时丢文本——协议允许但客户端极少这么发
+- **A15**：Anthropic 路径 top_k 静默丢弃——与 chat 路径行为不一致，但无警告外无实质影响
+
+## 三、已验证安全、无需改动
 
 ### S1. requestForceSearch 并发安全性
 - 设置点（3247/3325/3327/3356）到所有读取点（ensureChatTools 3371、ensureResponsesTools 3382、快照 3394）之间**无 await**，纯同步执行，Node.js 单线程下不可能被并发请求插队
@@ -76,8 +100,8 @@
 | 14 | 模型列表过滤逻辑 | FREE_MODEL_IDS + -search 变体 | ✅ 通过，7 个模型 + 变体正确 |
 | 15 | CORS/OPTIONS 处理 | setCorsHeaders + 204 响应 | ✅ 通过 |
 | 16 | 完整 diff 复核 | cfa5396..HEAD 全部新增行 | ✅ 通过，无意外改动 |
-| 17-20 | （待子 agent 回报后补充） | | |
-
+| 17 | 代码审计员全量审计 | 4676 行通读，17 项发现 | ✅ 完成，2 严重+11 轻微已修，4 轻微记录为已知问题 |
+| 18-20 | （待测试工程师 mock 测试回报后补充） | | |
 
 （待补充）
 
