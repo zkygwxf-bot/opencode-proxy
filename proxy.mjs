@@ -407,20 +407,22 @@ function identityHeaders(session) {
 }
 
 // 与 opencode 源码 packages/schema/src/identifier.ts 的 descending() 同格式：
-// "ses_" + 12 位 hex（~timestamp）+ 14 位 base62。真客户端 session.id 即此格式。
+// "ses_" + 12 位 hex（~(unix_ms*0x1000+counter) 取低 48 位，倒置时间戳）+ 14 位 base62。
+// 上游会解码验证时间戳，随机 hex 会解出非法时间戳 → 403 FreeTierError。
+// 公式来自 opencode2api PR #69（Go 版），JS 版已实测 200 通过。
 let _freshSessionId = null;
 let _freshSessionAt = 0;
+let _sessionCounter = 0;
+function mintedTimePrefix() {
+  const counter = (++_sessionCounter) & 0xfff;
+  const current = BigInt(Date.now()) * 0x1000n + BigInt(counter);
+  const inverted = (~current) & 0xffffffffffffn;
+  return inverted.toString(16).padStart(12, "0");
+}
 function freshSessionId() {
   const now = Date.now();
   if (!_freshSessionId || now - _freshSessionAt > 12 * 3600 * 1000) {
-    const cur = BigInt(now) * 0x1000n + 1n;
-    const v = ~cur & ((1n << 48n) - 1n);
-    let time = "";
-    for (let i = 0; i < 6; i++)
-      time += Number((v >> BigInt(40 - 8 * i)) & 0xffn)
-        .toString(16)
-        .padStart(2, "0");
-    _freshSessionId = "ses_" + time + randB62(14);
+    _freshSessionId = "ses_" + mintedTimePrefix() + randB62(14);
     _freshSessionAt = now;
   }
   return _freshSessionId;
@@ -3748,6 +3750,8 @@ const server = http.createServer((req, res) => {
               modelsData.data = modelsData.data.filter(
                 (m) => typeof m?.id === "string" && FREE_MODEL_IDS.has(m.id)
               );
+              // 空列表也视为上游异常：走下面的内置兜底，保证客户端总能拉到模型（v35 本意）
+              if (modelsData.data.length === 0) throw new Error("upstream empty model list");
               if (!hideSearchVariants) {
                 const extra = [];
                 for (const m of modelsData.data) {
@@ -3765,7 +3769,7 @@ const server = http.createServer((req, res) => {
               return sendJson(res, upstream.status, modelsData);
             }
           } catch {
-            // 解析失败：走下面的兜底
+            // 解析失败/空列表：走下面的兜底
           }
         }
         console.warn(
