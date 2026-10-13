@@ -20,7 +20,7 @@ const server = http.createServer((req, res) => {
   const h = req.headers;
   if (h["x-session-id"] || h["x-opencode-session"] || h["x-opencode-org-id"]) {
     const session = {
-      userAgent: h["user-agent"] || "opencode/latest/2.0.12/cli",
+      userAgent: h["user-agent"] || "opencode/latest/2.0.28/cli",
       xOpencodeClient: h["x-opencode-client"] || "cli",
       xOpencodeOrgId: h["x-opencode-org-id"] || "",
       xOpencodeProject: h["x-opencode-project"] || "",

@@ -383,7 +383,7 @@ function sessionStatus() {
 function identityHeaders(session) {
   const h = {};
   if (!session) return h;
-  h["user-agent"] = session.userAgent || "opencode/latest/2.0.12/cli";
+  h["user-agent"] = session.userAgent || "opencode/latest/2.0.28/cli";
   if (session.xOpencodeClient) h["x-opencode-client"] = session.xOpencodeClient;
   if (session.xOpencodeOrgId) h["x-opencode-org-id"] = session.xOpencodeOrgId;
   if (session.xOpencodeProject)
@@ -3276,7 +3276,7 @@ const server = http.createServer((req, res) => {
           JSON.stringify(
             {
               userAgent:
-                req.headers["user-agent"] || "opencode/latest/2.0.12/cli",
+                req.headers["user-agent"] || "opencode/latest/2.0.28/cli",
               xOpencodeClient: req.headers["x-opencode-client"] || "cli",
               xOpencodeOrgId: req.headers["x-opencode-org-id"] || "",
               xOpencodeProject: req.headers["x-opencode-project"] || "",
