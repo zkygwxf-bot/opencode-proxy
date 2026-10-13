@@ -73,8 +73,11 @@
 | 11 | 健康检查+模型列表 | /health + /v1/models | ✅ 通过，返回正常 |
 | 12 | webfetch SSRF 防护 | isPrivateIpLiteral/ssrfBlockReason | ✅ 通过，私网IP/DNS重绑定/跳转链全覆盖 |
 | 13 | 硬编码密钥扫描 | 全文件密钥模式 | ✅ 通过，无硬编码密钥 |
-| 14 | | | |
-| ... | | | |
+| 14 | 模型列表过滤逻辑 | FREE_MODEL_IDS + -search 变体 | ✅ 通过，7 个模型 + 变体正确 |
+| 15 | CORS/OPTIONS 处理 | setCorsHeaders + 204 响应 | ✅ 通过 |
+| 16 | 完整 diff 复核 | cfa5396..HEAD 全部新增行 | ✅ 通过，无意外改动 |
+| 17-20 | （待子 agent 回报后补充） | | |
+
 
 （待补充）
 
