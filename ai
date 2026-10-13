@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# 解析软链接，找到真实目录
+SRC="$0"
+while [ -L "$SRC" ]; do
+  DIR="$(cd -P "$(dirname "$SRC")" && pwd)"
+  SRC="$(readlink "$SRC")"
+  [[ "$SRC" != /* ]] && SRC="$DIR/$SRC"
+done
+cd -P "$(dirname "$SRC")"
+command -v node >/dev/null 2>&1 || { echo "没找到 node，请先安装 Node.js"; exit 1; }
+node proxy.mjs
