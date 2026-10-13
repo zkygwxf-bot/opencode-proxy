@@ -1,0 +1,10 @@
+{"round":"B71","name":"非流式-search全链路(chat)","pass":true,"detail":"status=200 content=\"MOCK-FINAL B71 [ECHO:抓取测试页\\nFETCH-TARGET-CONTENT-abc123：这是一段由\" leaked=false upstreamReqs=2 followUp=true retried=0"}
+{"round":"B72","name":"responses非流式-search(spark)","pass":true,"detail":"status=200 text=\"MOCK-FINAL B72 [ECHO:抓取测试页FETCH-TARGET-CONTENT-abc123：这是一段由本\" fnLeak=false upstreamReqs=2 retried=0"}
+{"round":"B73","name":"messages流式-search(spark)","pass":true,"detail":"status=200 text=\"MOCK-FINAL B73 [ECHO:抓取测试页FETCH-TARGET-CONTENT-abc123：这是一段由本\" toolLeak=false upstreamReqs=2 retried=0"}
+{"round":"B74","name":"1000条messages","pass":true,"detail":"status=200 text=\"MOCK-RESP-TEXT B74\" retried=0"}
+{"round":"B75","name":"多模态image_url","pass":true,"detail":"direct:status=200 body={\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion\",\"created\":1760310000,\"model\":\"mimo-v2.6-flash-free\"; translate:status=200 body={\"id\":\"resp_mock_1\",\"object\":\"chat.completion\",\"created\":1791865922,\"model\":\"muse-spark-1.3-contribu retried=0"}
+{"round":"B76","name":"tool_choice=required","pass":true,"detail":"status=200 hasTool=true finish=tool_calls retried=0"}
+{"round":"B77","name":"100并发混合压力","pass":true,"detail":"100/100 全部正确, 总耗时1269ms"}
+{"round":"B78","name":"-search上游首轮500","pass":true,"detail":"status=500 aborted=false body={\"error\":{\"message\":\"mock internal error\"}} retried=0"}
+{"round":"B79","name":"response_format=json_object","pass":true,"detail":"status=200 content=\"MOCK-RESP-TEXT B79\" retried=0"}
+{"round":"B80","name":"空tools数组+-search","pass":true,"detail":"status=200 upstreamTools=[\"read\",\"shell\",\"webfetch\",\"websearch\"] upstreamReqs=2 retried=0"}

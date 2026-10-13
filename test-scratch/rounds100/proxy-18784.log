@@ -1,0 +1,2 @@
+[test-preload] opencode.ai -> 127.0.0.1 (mock upstream)
+端口 18784 已被占用：是不是已经启动了一个？先停掉旧的（Termux 里按 Ctrl+C）再启动

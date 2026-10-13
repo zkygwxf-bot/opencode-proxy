@@ -347,11 +347,19 @@ function getApiKey() {
   // Free ($0) models accept the literal key "public" — same as a fresh
   // `opencode` install with no key configured. A real Zen key is only
   // needed for paid models.
-  return (
-    process.env.OPENCODE_API_KEY ||
-    process.env.OPENCODE_ZEN_API_KEY ||
-    "public"
-  );
+  // Priority: env OPENCODE_API_KEY / OPENCODE_ZEN_API_KEY > ~/.config/opencode-proxy/key file > "public".
+  // The key file is for Termux users (setting env vars on mobile is awkward):
+  //   echo 'YOUR_KEY' > ~/.config/opencode-proxy/key && chmod 600 ~/.config/opencode-proxy/key
+  const fromEnv =
+    process.env.OPENCODE_API_KEY || process.env.OPENCODE_ZEN_API_KEY || "";
+  if (fromEnv) return fromEnv.trim();
+  try {
+    const keyFile =
+      (process.env.HOME || "~") + "/.config/opencode-proxy/key";
+    const fromFile = fs.readFileSync(keyFile, "utf8").trim();
+    if (fromFile) return fromFile;
+  } catch {}
+  return "public";
 }
 
 // sessionStatus 区分三种状态：ok / missing / corrupt，供错误文案和 /health 用
@@ -380,19 +388,42 @@ function identityHeaders(session) {
   if (session.xOpencodeOrgId) h["x-opencode-org-id"] = session.xOpencodeOrgId;
   if (session.xOpencodeProject)
     h["x-opencode-project"] = session.xOpencodeProject;
-  if (session.xOpencodeSession)
-    h["x-opencode-session"] = session.xOpencodeSession;
-  if (session.xSessionId) h["x-session-id"] = session.xSessionId;
-  // 官方客户端现每次必发 x-opencode-session-id（与 x-opencode-session 同值）；
-  // 门控暂不校验，先对齐，防后续收紧。
-  if (session.xOpencodeSession || session.xSessionId)
-    h["x-opencode-session-id"] = session.xOpencodeSession || session.xSessionId;
-  if (session.xSessionAffinity)
-    h["x-session-affinity"] = session.xSessionAffinity;
+  // v58 (2026-10-13): 免费层门控现在直接拉黑陈旧的匿名 session id ——
+  // 10-05 抓到的 session.json 三个 id 即使头/body 全对也 403，而任意格式正确
+  // 的新 id（"ses_"+descending()，与真客户端 Session.ID.create() 同格式）
+  // 直接 200。真客户端每次会话现场生成 session.id 并三头发同一值
+  // （x-opencode-session-id / x-opencode-session / x-session-affinity，
+  // 外加 X-Session-Id），这里照做；12 小时轮换一次，防服务端过期。
+  // 上游不校验时间戳新旧（8 天前的时间戳也 200），只认"没烧过的 id"。
+  const sid = freshSessionId();
+  h["x-opencode-session-id"] = sid;
+  h["x-opencode-session"] = sid;
+  h["x-session-affinity"] = sid;
+  h["X-Session-Id"] = sid;
   // 官方此处发稳定的 user.id（非每次生成）。优先复用从真客户端学到的值，
   // 学不到才回退到 fresh msg_ id（门控当前不校验此头）。
   h["x-opencode-request"] = session.xOpencodeRequest || freshMsgId();
   return h;
+}
+
+// 与 opencode 源码 packages/schema/src/identifier.ts 的 descending() 同格式：
+// "ses_" + 12 位 hex（~timestamp）+ 14 位 base62。真客户端 session.id 即此格式。
+let _freshSessionId = null;
+let _freshSessionAt = 0;
+function freshSessionId() {
+  const now = Date.now();
+  if (!_freshSessionId || now - _freshSessionAt > 12 * 3600 * 1000) {
+    const cur = BigInt(now) * 0x1000n + 1n;
+    const v = ~cur & ((1n << 48n) - 1n);
+    let time = "";
+    for (let i = 0; i < 6; i++)
+      time += Number((v >> BigInt(40 - 8 * i)) & 0xffn)
+        .toString(16)
+        .padStart(2, "0");
+    _freshSessionId = "ses_" + time + randB62(14);
+    _freshSessionAt = now;
+  }
+  return _freshSessionId;
 }
 
 const B62 =
@@ -544,7 +575,7 @@ function responsesFormatToText(rf) {
   return undefined; // "text" 或未知类型：默认即纯文本，不用传
 }
 
-function ensureResponsesTools(body) {
+function ensureResponsesTools(body, skipProxyTools = false) {
   const appTools = (Array.isArray(body.tools) ? body.tools : [])
     .map(toResponsesTool)
     .filter(Boolean);
@@ -564,7 +595,10 @@ function ensureResponsesTools(body) {
   // 也不拦截，避免把客户端的工具调用误当成反代内置的执行掉。
   const injectedProxyNames = new Set();
   // v42: 只有 -search 后缀或客户端原生搜索请求时才注入；否则不注入。
-  const proxyTools = requestForceSearch ? ALL_PROXY_TOOLS_RESPONSES : [];
+  // v57.2: translateToChat 路径（/v1/responses + 非 spark 模型）无拦截逻辑，
+  // 传 skipProxyTools=true，不注入（见 B8）。
+  const proxyTools =
+    requestForceSearch && !skipProxyTools ? ALL_PROXY_TOOLS_RESPONSES : [];
   for (const pt of proxyTools) {
     if (!names.has(pt.name)) {
       merged.push(pt);
@@ -829,7 +863,7 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
           const reason = obj.response?.incomplete_details?.reason;
           // incomplete 时若已发出工具调用，终结符必须是 tool_calls，
           // 否则客户端看不到工具调用的收尾（之前误发 stop/length）
-          finish(hasTools ? "tool_calls" : reason === "max_output_tokens" ? "length" : "stop");
+          finish(hasTools ? "tool_calls" : reason === "max_output_tokens" ? "length" : reason === "content_filter" ? "content_filter" : "stop");
         }
       };
       for (const line of lines) handleLine(line);
@@ -940,10 +974,10 @@ async function streamChatToResponses(upstream, emit, model, timing) {
           const idx = tc.index ?? 0;
           let entry = toolArgBuffers.get(idx);
           if (!entry) {
-            entry = { id: tc.id || `call_chat2resp_${idx}`, name: tc.function?.name || "", args: "" };
+            entry = { id: tc.id || `call_chat2resp_${idx}`, name: "", args: "" };
             toolArgBuffers.set(idx, entry);
           }
-          if (tc.function?.name) entry.name = tc.function.name;
+          if (typeof tc.function?.name === "string") entry.name += tc.function.name;
           if (typeof tc.function?.arguments === "string") entry.args += tc.function.arguments;
         }
       }
@@ -986,9 +1020,17 @@ async function streamChatToResponses(upstream, emit, model, timing) {
   if (timing && respUsage) {
     timing.usage = { prompt_tokens: respUsage.input_tokens, completion_tokens: respUsage.output_tokens, total_tokens: respUsage.total_tokens };
   }
+  // v57.2: chat finish_reason=length/content_filter → response.incomplete
+  //（之前硬编码 completed，截断会被误报为完整响应）。
+  const _incReason = finishReason === "length" ? "max_output_tokens" : finishReason === "content_filter" ? "content_filter" : null;
   emitEvent({
-    type: "response.completed",
-    response: { id: respId, object: "response", created, model, status: "completed", output, usage: respUsage },
+    type: _incReason ? "response.incomplete" : "response.completed",
+    response: {
+      id: respId, object: "response", created, model,
+      status: _incReason ? "incomplete" : "completed",
+      ...(_incReason ? { incomplete_details: { reason: _incReason } } : {}),
+      output, usage: respUsage,
+    },
   });
   return { text: textParts.join(""), toolCalls, finishReason };
 }
@@ -1035,22 +1077,26 @@ async function streamChatToAnthropic(upstream, emit, model, timing) {
           const idx = tc.index ?? 0;
           let entry = toolArgBuffers.get(idx);
           if (!entry) {
-            entry = { id: tc.id || `toolu_${idx}`, name: tc.function?.name || "", args: "", started: false, pendingArgs: "" };
+            entry = { id: tc.id || `toolu_${idx}`, name: "", args: "", started: false, pendingArgs: "" };
             toolArgBuffers.set(idx, entry);
           }
-          if (tc.function?.name) entry.name = tc.function.name;
-          if (typeof tc.function?.arguments === "string") {
+          const nameFrag = typeof tc.function?.name === "string" ? tc.function.name : "";
+          const argsFrag = typeof tc.function?.arguments === "string" ? tc.function.arguments : "";
+          if (nameFrag) entry.name += nameFrag;
+          if (argsFrag) {
             if (entry.started) {
-              entry.args += tc.function.arguments;
-              emitEvent({ type: "content_block_delta", index: entry.blockIndex, delta: { type: "input_json_delta", partial_json: tc.function.arguments } });
+              entry.args += argsFrag;
+              emitEvent({ type: "content_block_delta", index: entry.blockIndex, delta: { type: "input_json_delta", partial_json: argsFrag } });
             } else {
               // 名字还没到，先攒着，等 content_block_start 发出去再补发
-              entry.pendingArgs += tc.function.arguments;
+              entry.pendingArgs += argsFrag;
             }
           }
           // v47.2: 名字到了才发 content_block_start，避免空名字发出去后无法修正
           //（Anthropic 客户端看到空 name 的 tool_use 会直接报错）。
-          if (!entry.started && entry.name) {
+          // name 可能分片：收齐（本分片 name 为空或已带 arguments）后再 start，保证 name 完整
+          const nameComplete = entry.name && (!nameFrag || argsFrag);
+          if (!entry.started && nameComplete) {
             entry.started = true;
             entry.blockIndex = blockIndex;
             emitEvent({ type: "content_block_start", index: blockIndex, content_block: { type: "tool_use", id: entry.id, name: entry.name, input: {} } });
@@ -1069,17 +1115,29 @@ async function streamChatToAnthropic(upstream, emit, model, timing) {
   }
   emitEvent({ type: "content_block_stop", index: 0 });
   for (const [, entry] of toolArgBuffers) {
-    if (!entry.name || !entry.started) continue;
+    if (!entry.name) continue;
+    if (!entry.started) {
+      // 流结束时 name 刚收齐：补发 block 起止，保证 tool_call 不丢
+      entry.started = true;
+      entry.blockIndex = blockIndex;
+      emitEvent({ type: "content_block_start", index: blockIndex, content_block: { type: "tool_use", id: entry.id, name: entry.name, input: {} } });
+      blockIndex++;
+      if (entry.pendingArgs) {
+        entry.args += entry.pendingArgs;
+        emitEvent({ type: "content_block_delta", index: entry.blockIndex, delta: { type: "input_json_delta", partial_json: entry.pendingArgs } });
+        entry.pendingArgs = "";
+      }
+    }
     toolCalls.push(entry);
     emitEvent({ type: "content_block_stop", index: entry.blockIndex });
   }
-  const stopReason = toolCalls.length > 0 ? "tool_use" : finishReason === "length" ? "max_tokens" : "end_turn";
+  const stopReason = toolCalls.length > 0 ? "tool_use" : finishReason === "length" ? "max_tokens" : finishReason === "content_filter" ? "content_filter" : "end_turn";
   const outUsage = {
-    input_tokens: usage?.prompt_tokens ?? 0,
-    output_tokens: usage?.completion_tokens ?? 0,
+    input_tokens: usage?.input_tokens ?? usage?.prompt_tokens ?? 0,
+    output_tokens: usage?.output_tokens ?? usage?.completion_tokens ?? 0,
   };
   if (timing) timing.usage = { prompt_tokens: outUsage.input_tokens, completion_tokens: outUsage.output_tokens, total_tokens: (usage?.total_tokens ?? outUsage.input_tokens + outUsage.output_tokens) };
-  emitEvent({ type: "message_delta", delta: { stop_reason: stopReason }, usage: { output_tokens: outUsage.output_tokens } });
+  emitEvent({ type: "message_delta", delta: { stop_reason: stopReason }, usage: { input_tokens: outUsage.input_tokens, output_tokens: outUsage.output_tokens } });
   emitEvent({ type: "message_stop" });
   return { text: textParts.join(""), toolCalls, finishReason };
 }
@@ -1091,12 +1149,41 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
   const decoder = new TextDecoder();
   let buf = "";
   const rawEmit = (payload) => emit(`data: ${payload}\n\n`);
+  // name 可能分片到达：攒齐后再判定。收齐信号 = 本分片 name 为空（已转入 arguments/其他字段）
+  // 或本分片带了 arguments（name 必已发完）。流结束/[DONE]/finish 时对未决定的做收尾判定。
+  const decideEntry = (st) => {
+    const nm = unprefixToolName(st.entry.name, knownNames);
+    st.entry.name = nm;
+    st.decided = interceptNames.has(nm) ? "proxy" : "client";
+    if (st.decided === "proxy") {
+      proxySeenThisRound = true;
+      if (!st.entry.call_id) st.entry.call_id = `call_proxy_${++proxyCallSeq}`;
+      intercepted.push(st.entry);
+    } else {
+      // 客户端工具：把之前暂存的 chunk 补发出去
+      for (const h of st.held) rawEmit(h);
+      st.held = [];
+    }
+  };
+  const finalizeUndecided = () => {
+    for (const [, st] of pending) {
+      if (st.decided || !st.entry) continue;
+      if (st.entry.name) decideEntry(st);
+      else {
+        // name 始终没到：放行暂存 chunk，不吞掉
+        for (const h of st.held) rawEmit(h);
+        st.held = [];
+        st.decided = "client";
+      }
+    }
+  };
   const handleLine = (line) => {
     const t = line.trim();
     if (!t.startsWith("data:")) return;
     const payload = t.slice(5).trim();
     if (!payload) return;
     if (payload === "[DONE]") {
+      finalizeUndecided();
       // 有拦截时 [DONE] 由 follow-up 的最后一轮发出，这里吞掉
       if (intercepted.length === 0) emit("data: [DONE]\n\n");
       return;
@@ -1136,20 +1223,9 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
           st.entry.name += nameFrag;
           st.entry.arguments += argsFrag;
         }
-        if (!st.decided && st.entry.name) {
-          const nm = unprefixToolName(st.entry.name, knownNames);
-          st.entry.name = nm;
-          st.decided = interceptNames.has(nm) ? "proxy" : "client";
-          if (st.decided === "proxy") {
-            proxySeenThisRound = true;
-            if (!st.entry.call_id)
-              st.entry.call_id = `call_proxy_${++proxyCallSeq}`;
-            intercepted.push(st.entry);
-          } else {
-            // 客户端工具：把之前暂存的 chunk 补发出去
-            for (const h of st.held) rawEmit(h);
-            st.held = [];
-          }
+        if (!st.decided && st.entry.name && (!nameFrag || argsFrag)) {
+          // name 收齐后再判定：防 name 分片时用首个分片误判
+          decideEntry(st);
         }
         if (!st.decided) {
           // 名字还没攒齐：暂存，等判定后再决定发不发
@@ -1178,6 +1254,7 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
       return;
     }
     if (choice && choice.finish_reason) {
+      finalizeUndecided();
       // 有拦截时终结符由 follow-up 的最后一轮发出，这里吞掉，避免客户端提前收尾
       if (intercepted.length > 0) return;
       rawEmit(payload);
@@ -1216,6 +1293,7 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
       reader.releaseLock();
     } catch {}
   }
+  finalizeUndecided();
   return { intercepted };
 }
 
@@ -1447,7 +1525,9 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
         : obj.type === "response.incomplete"
           ? incompleteReason === "max_output_tokens"
             ? "max_tokens"
-            : "end_turn"
+            : incompleteReason === "content_filter"
+              ? "content_filter"
+              : "end_turn"
           : "end_turn";
       ev("message_delta", {
         type: "message_delta",
@@ -1716,6 +1796,22 @@ function sseToResponse(sseText, fallbackModel, knownNames) {
   let status = "completed";
   let incompleteReason = "";
   const functions = [];
+  const seenFn = new Set();
+  const pushFn = (item) => {
+    if (!item || item.type !== "function_call" || !item.name) return;
+    const key = item.call_id || item.id || `${item.name}:${functions.length}`;
+    if (seenFn.has(key)) return;
+    seenFn.add(key);
+    functions.push({
+      type: "function_call",
+      call_id: item.call_id || item.id || "",
+      name: unprefixToolName(item.name, knownNames),
+      arguments:
+        typeof item.arguments === "string"
+          ? item.arguments
+          : JSON.stringify(item.arguments ?? {}),
+    });
+  };
   for (const line of sseText.split("\n")) {
     const t = line.trim();
     if (!t.startsWith("data:")) continue;
@@ -1782,19 +1878,13 @@ function sseToResponse(sseText, fallbackModel, knownNames) {
       (obj.type === "response.completed" || obj.type === "response.incomplete") &&
       Array.isArray(resp.output)
     ) {
-      for (const item of resp.output) {
-        if (item && item.type === "function_call" && item.name) {
-          functions.push({
-            type: "function_call",
-            call_id: item.call_id || item.id || "",
-            name: unprefixToolName(item.name, knownNames),
-            arguments:
-              typeof item.arguments === "string"
-                ? item.arguments
-                : JSON.stringify(item.arguments ?? {}),
-          });
-        }
-      }
+      for (const item of resp.output) pushFn(item);
+    }
+    // 部分网关的 response.completed 不重复 output（function_call 只出现在
+    // output_item.done 事件里）。这里也收集，靠 call_id 去重——真上游两种
+    // 事件都有时不重复、不改变原有行为（B72）。
+    if (obj.type === "response.output_item.done" && obj.item) {
+      pushFn(obj.item);
     }
   }
   const text = textParts.join("");
@@ -2829,7 +2919,9 @@ function responseToChatCompletion(resp, fallbackModel, knownNames) {
     ? "tool_calls"
     : resp.status === "incomplete" && resp.incompleteReason === "max_output_tokens"
       ? "length"
-      : "stop";
+      : resp.status === "incomplete" && resp.incompleteReason === "content_filter"
+        ? "content_filter"
+        : "stop";
   const out = {
     id: resp.id || `chatcmpl-proxy-${Date.now()}`,
     object: "chat.completion",
@@ -3029,7 +3121,9 @@ function responseToAnthropic(resp, fallbackModel, knownNames) {
     ? "tool_use"
     : resp.status === "incomplete" && resp.incompleteReason === "max_output_tokens"
       ? "max_tokens"
-      : "end_turn";
+      : resp.status === "incomplete" && resp.incompleteReason === "content_filter"
+        ? "content_filter"
+        : "end_turn";
   return {
     id: resp.id || `msg_proxy_${Date.now()}`,
     type: "message",
@@ -3270,6 +3364,11 @@ const server = http.createServer((req, res) => {
       } catch {
         return sendErrorJson(res, 400, "Invalid JSON body");
       }
+      // "null"/数字等非对象 body 也直接 400：下面各行会解引用 body.xxx，
+      // null 会抛 TypeError 被外层 catch 转成误导性的 502"上游连接失败"（R41）。
+      if (!body || typeof body !== "object") {
+        return sendErrorJson(res, 400, "请求体为空或不是 JSON 对象");
+      }
       // v57: 日志用原始模型名（-search 后缀剥离前用户实际选的那个）。
       // 只读局部变量 origModel，body 本体一个字符都不加。
       origModel = body?.model ?? null;
@@ -3340,7 +3439,7 @@ const server = http.createServer((req, res) => {
       // v45: 所有接口都认 -search 后缀（无条件开启搜索）；Response API 的
       // RikkaHub"模型搜索"开关（v36 原生转换）同样开启。都不选则不注入（v42）。
       if (typeof body.model === "string" && body.model.endsWith("-search")) {
-        body.model = body.model.slice(0, -"-search".length);
+        body.model = body.model.replace(/(-search)+$/, "");
         if (!body.model) {
           return sendErrorJson(res, 400, "模型名无效");
         }
@@ -3399,7 +3498,13 @@ const server = http.createServer((req, res) => {
         url.pathname !== "/v1/messages"
       ) {
         clientWantsStream = body.stream === true;
-        ensureResponsesTools(body);
+        // v57.2: 随后可能走 translateToChat（/v1/responses + 非 spark 模型，
+        // 判定条件与下面的 translateToChat 分支一致），该路径无拦截逻辑，
+        // 不注入 webfetch/websearch（见 B8）。
+        const _skipProxy =
+          typeof body?.model === "string" &&
+          !body.model.startsWith("muse-spark-");
+        ensureResponsesTools(body, _skipProxy);
       }
       if (url.pathname === "/v1/messages") {
         clientWantsStream = body.stream === true;
@@ -3409,6 +3514,12 @@ const server = http.createServer((req, res) => {
       if (Array.isArray(_msgList) && _msgList.length === 0) {
         return sendErrorJson(res, 400, "消息列表为空");
       }
+    }
+    // 空 body / 非对象 body 直接 400：后面各分支会解引用 body.messages/body.input，
+    // body 为 null 时抛 TypeError，被外层 catch 转成误导性的 502"上游连接失败"（R41）。
+    // /v1/models（GET 可无 body）不受影响。
+    if (upstreamPath !== "/zen/v1/models" && (!body || typeof body !== "object")) {
+      return sendErrorJson(res, 400, "请求体为空或不是 JSON 对象");
     }
     // 请求级 -search 标志：body 解析后立刻捕获成本地常量。
     // 后面要过很多 await，全局 requestForceSearch 可能被并发请求改掉，
@@ -4157,7 +4268,7 @@ const server = http.createServer((req, res) => {
               role: "assistant",
               model: targetModel,
               content,
-              stop_reason: content.some((c) => c.type === "tool_use") ? "tool_use" : _fr === "length" ? "max_tokens" : "end_turn",
+              stop_reason: content.some((c) => c.type === "tool_use") ? "tool_use" : _fr === "length" ? "max_tokens" : _fr === "content_filter" ? "content_filter" : "end_turn",
               usage: {
                 input_tokens: chatObj.usage?.prompt_tokens ?? chatObj.usage?.input_tokens ?? 0,
                 output_tokens: chatObj.usage?.completion_tokens ?? chatObj.usage?.output_tokens ?? 0,
@@ -4186,10 +4297,15 @@ const server = http.createServer((req, res) => {
                 arguments: tc.function?.arguments || "{}",
               });
             }
+            // v57.2: chat finish_reason=length/content_filter → Responses incomplete
+            //（之前硬编码 completed，截断会被误报为完整响应）。
+            const _fr2 = chatObj.choices?.[0]?.finish_reason;
+            const _incReason = _fr2 === "length" ? "max_output_tokens" : _fr2 === "content_filter" ? "content_filter" : null;
             const respObj = {
               id: `resp-proxy-${Date.now()}`,
               object: "response",
-              status: "completed",
+              status: _incReason ? "incomplete" : "completed",
+              ...(_incReason ? { incomplete_details: { reason: _incReason } } : {}),
               model: targetModel,
               output,
               usage: chatObj.usage ? {

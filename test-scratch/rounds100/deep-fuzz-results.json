@@ -1,0 +1,1059 @@
+{
+ "seed": 12345,
+ "iter": 150,
+ "pass": 150,
+ "fail": 0,
+ "crash": 0,
+ "out": [
+  {
+   "i": 0,
+   "path": "/v1/responses",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 1,
+   "path": "/v1/messages",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 2,
+   "path": "/v1/chat/completions",
+   "mutation": "bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 3,
+   "path": "/v1/messages",
+   "mutation": "huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 4,
+   "path": "/v1/chat/completions",
+   "mutation": "dup-key+wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 5,
+   "path": "/v1/messages",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 6,
+   "path": "/v1/messages",
+   "mutation": "huge-string+huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 7,
+   "path": "/v1/messages",
+   "mutation": "bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 8,
+   "path": "/v1/messages",
+   "mutation": "wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 9,
+   "path": "/v1/responses",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 10,
+   "path": "/v1/responses",
+   "mutation": "truncate-array+neg-number",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 11,
+   "path": "/v1/messages",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 12,
+   "path": "/v1/messages",
+   "mutation": "truncate-array+dup-key",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 13,
+   "path": "/v1/chat/completions",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 14,
+   "path": "/v1/messages",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 15,
+   "path": "/v1/responses",
+   "mutation": "neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 16,
+   "path": "/v1/responses",
+   "mutation": "drop-field+extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 17,
+   "path": "/v1/chat/completions",
+   "mutation": "empty-string+neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 18,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 19,
+   "path": "/v1/messages",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 20,
+   "path": "/v1/chat/completions",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 21,
+   "path": "/v1/responses",
+   "mutation": "extra-field+float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 22,
+   "path": "/v1/messages",
+   "mutation": "wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 23,
+   "path": "/v1/responses",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 24,
+   "path": "/v1/responses",
+   "mutation": "weird-model+weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 25,
+   "path": "/v1/responses",
+   "mutation": "wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 26,
+   "path": "/v1/messages",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 27,
+   "path": "/v1/chat/completions",
+   "mutation": "nested-garbage+empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 28,
+   "path": "/v1/responses",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 29,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 30,
+   "path": "/v1/chat/completions",
+   "mutation": "huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 31,
+   "path": "/v1/messages",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 32,
+   "path": "/v1/messages",
+   "mutation": "empty-string+empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 33,
+   "path": "/v1/responses",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 34,
+   "path": "/v1/messages",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 35,
+   "path": "/v1/messages",
+   "mutation": "extra-field+dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 36,
+   "path": "/v1/chat/completions",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 37,
+   "path": "/v1/chat/completions",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 38,
+   "path": "/v1/responses",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 39,
+   "path": "/v1/chat/completions",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 40,
+   "path": "/v1/messages",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 41,
+   "path": "/v1/messages",
+   "mutation": "huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 42,
+   "path": "/v1/responses",
+   "mutation": "null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 43,
+   "path": "/v1/chat/completions",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 44,
+   "path": "/v1/chat/completions",
+   "mutation": "null-field+weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 45,
+   "path": "/v1/messages",
+   "mutation": "huge-string+float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 46,
+   "path": "/v1/messages",
+   "mutation": "huge-string+bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 47,
+   "path": "/v1/messages",
+   "mutation": "wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 48,
+   "path": "/v1/messages",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 49,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 50,
+   "path": "/v1/messages",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 51,
+   "path": "/v1/messages",
+   "mutation": "empty-string+weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 52,
+   "path": "/v1/chat/completions",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 53,
+   "path": "/v1/responses",
+   "mutation": "truncate-array",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 54,
+   "path": "/v1/responses",
+   "mutation": "huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 55,
+   "path": "/v1/responses",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 56,
+   "path": "/v1/messages",
+   "mutation": "nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 57,
+   "path": "/v1/responses",
+   "mutation": "bad-role+drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 58,
+   "path": "/v1/responses",
+   "mutation": "nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 59,
+   "path": "/v1/chat/completions",
+   "mutation": "neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 60,
+   "path": "/v1/chat/completions",
+   "mutation": "bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 61,
+   "path": "/v1/messages",
+   "mutation": "nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 62,
+   "path": "/v1/responses",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 63,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 64,
+   "path": "/v1/responses",
+   "mutation": "null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 65,
+   "path": "/v1/chat/completions",
+   "mutation": "extra-field+weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 66,
+   "path": "/v1/messages",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 67,
+   "path": "/v1/chat/completions",
+   "mutation": "null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 68,
+   "path": "/v1/messages",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 69,
+   "path": "/v1/messages",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 70,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 71,
+   "path": "/v1/chat/completions",
+   "mutation": "wrong-type+huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 72,
+   "path": "/v1/responses",
+   "mutation": "float-number+huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 73,
+   "path": "/v1/responses",
+   "mutation": "bad-role+drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 74,
+   "path": "/v1/messages",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 75,
+   "path": "/v1/responses",
+   "mutation": "null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 76,
+   "path": "/v1/responses",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 77,
+   "path": "/v1/chat/completions",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 78,
+   "path": "/v1/messages",
+   "mutation": "neg-number+nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 79,
+   "path": "/v1/messages",
+   "mutation": "weird-model+extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 80,
+   "path": "/v1/messages",
+   "mutation": "neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 81,
+   "path": "/v1/messages",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 82,
+   "path": "/v1/messages",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 83,
+   "path": "/v1/messages",
+   "mutation": "truncate-array+empty-string",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 84,
+   "path": "/v1/chat/completions",
+   "mutation": "wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 85,
+   "path": "/v1/chat/completions",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 86,
+   "path": "/v1/messages",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 87,
+   "path": "/v1/messages",
+   "mutation": "truncate-array",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 88,
+   "path": "/v1/messages",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 89,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 90,
+   "path": "/v1/responses",
+   "mutation": "bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 91,
+   "path": "/v1/chat/completions",
+   "mutation": "extra-field+null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 92,
+   "path": "/v1/responses",
+   "mutation": "neg-number+nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 93,
+   "path": "/v1/responses",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 94,
+   "path": "/v1/messages",
+   "mutation": "weird-model+truncate-array",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 95,
+   "path": "/v1/chat/completions",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 96,
+   "path": "/v1/messages",
+   "mutation": "extra-field+null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 97,
+   "path": "/v1/responses",
+   "mutation": "dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 98,
+   "path": "/v1/chat/completions",
+   "mutation": "empty-string+null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 99,
+   "path": "/v1/chat/completions",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 100,
+   "path": "/v1/chat/completions",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 101,
+   "path": "/v1/chat/completions",
+   "mutation": "truncate-array",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 102,
+   "path": "/v1/responses",
+   "mutation": "drop-field+truncate-array",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 103,
+   "path": "/v1/messages",
+   "mutation": "extra-field+float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 104,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model+huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 105,
+   "path": "/v1/responses",
+   "mutation": "neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 106,
+   "path": "/v1/chat/completions",
+   "mutation": "drop-field+float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 107,
+   "path": "/v1/messages",
+   "mutation": "weird-model+wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 108,
+   "path": "/v1/messages",
+   "mutation": "huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 109,
+   "path": "/v1/chat/completions",
+   "mutation": "null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 110,
+   "path": "/v1/responses",
+   "mutation": "neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 111,
+   "path": "/v1/responses",
+   "mutation": "float-number+dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 112,
+   "path": "/v1/messages",
+   "mutation": "truncate-array",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 113,
+   "path": "/v1/responses",
+   "mutation": "float-number+dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 114,
+   "path": "/v1/chat/completions",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 115,
+   "path": "/v1/responses",
+   "mutation": "neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 116,
+   "path": "/v1/messages",
+   "mutation": "float-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 117,
+   "path": "/v1/responses",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 118,
+   "path": "/v1/messages",
+   "mutation": "nested-garbage+dup-key",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 119,
+   "path": "/v1/messages",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 120,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model+null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 121,
+   "path": "/v1/chat/completions",
+   "mutation": "drop-field+bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 122,
+   "path": "/v1/messages",
+   "mutation": "huge-string+neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 123,
+   "path": "/v1/chat/completions",
+   "mutation": "neg-number",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 124,
+   "path": "/v1/responses",
+   "mutation": "truncate-array",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 125,
+   "path": "/v1/messages",
+   "mutation": "nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 126,
+   "path": "/v1/chat/completions",
+   "mutation": "truncate-array+dup-key",
+   "pass": true,
+   "detail": "st=400"
+  },
+  {
+   "i": 127,
+   "path": "/v1/chat/completions",
+   "mutation": "neg-number+nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 128,
+   "path": "/v1/responses",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 129,
+   "path": "/v1/messages",
+   "mutation": "dup-key+nested-garbage",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 130,
+   "path": "/v1/chat/completions",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 131,
+   "path": "/v1/chat/completions",
+   "mutation": "huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 132,
+   "path": "/v1/responses",
+   "mutation": "weird-model+weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 133,
+   "path": "/v1/responses",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 134,
+   "path": "/v1/chat/completions",
+   "mutation": "null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 135,
+   "path": "/v1/responses",
+   "mutation": "bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 136,
+   "path": "/v1/messages",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 137,
+   "path": "/v1/responses",
+   "mutation": "empty-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 138,
+   "path": "/v1/messages",
+   "mutation": "huge-string",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 139,
+   "path": "/v1/chat/completions",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 140,
+   "path": "/v1/responses",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 141,
+   "path": "/v1/messages",
+   "mutation": "wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 142,
+   "path": "/v1/messages",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 143,
+   "path": "/v1/chat/completions",
+   "mutation": "weird-model",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 144,
+   "path": "/v1/messages",
+   "mutation": "null-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 145,
+   "path": "/v1/messages",
+   "mutation": "dup-key+bad-role",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 146,
+   "path": "/v1/messages",
+   "mutation": "extra-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 147,
+   "path": "/v1/messages",
+   "mutation": "drop-field",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 148,
+   "path": "/v1/messages",
+   "mutation": "empty-string+wrong-type",
+   "pass": true,
+   "detail": "st=200"
+  },
+  {
+   "i": 149,
+   "path": "/v1/responses",
+   "mutation": "bad-role",
+   "pass": true,
+   "detail": "st=200"
+  }
+ ]
+}

@@ -1,0 +1,52 @@
+{"round":"R01","name":"B1 streamResponsesDirectWithIntercept usage回退","pass":true,"detail":"status=200 logLine=\"#81 ✓ 首字0.0秒 · 总计0.0秒 · 700tok/s · 入11 · 出7\""}
+{"round":"R02","name":"B2 sseToResponse非流式usage回退","pass":true,"detail":"status=200 usage={\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}"}
+{"round":"R03","name":"B3 responseToChatCompletion usage回退","pass":true,"detail":"status=200 usage={\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}"}
+{"round":"R04","name":"B4 responseToAnthropic usage回退","pass":true,"detail":"status=200 usage={\"input_tokens\":11,\"output_tokens\":7}"}
+{"round":"R05","name":"B5 非spark转chat Anthropic组装usage回退","pass":true,"detail":"status=200 usage={\"input_tokens\":11,\"output_tokens\":7}"}
+{"round":"R06","name":"B6 -search显式forceSearch注入搜索工具","pass":true,"detail":"search工具名=[\"read\",\"shell\",\"webfetch\",\"websearch\"] 无后缀=[\"read\",\"shell\"]"}
+{"round":"R07","name":"B7 thinking/text block严格按序开闭","pass":true,"detail":"status=200 seq=[\"message_start\",\"start:0:thinking\",\"delta:0:thinking_delta\",\"stop:0\",\"start:1:text\",\"delta:1:text_delta\",\"delta:1:text_delta\",\"stop:1\",\"message_delta\",\"message_stop\"] stopReason=end_turn"}
+{"round":"R08","name":"B8 translateToChat不注入搜索工具","pass":true,"detail":"status=200 upstreamPath=/zen/v1/chat/completions 工具名=[\"read\",\"shell\"]"}
+{"round":"R09","name":"B9 streamChatToResponses respUsage回退","pass":true,"detail":"status=200 usage={\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}"}
+{"round":"R10","name":"B10 sseToChatCompletion tool_calls组装","pass":true,"detail":"status=200 tool=get_weather args={\"city\":\"Beijing\"} finish=tool_calls（注：mock无法产生稀疏索引空洞，filter(Boolean)本身为代码级防御）"}
+{"round":"R11","name":"B11 shell参数清理仅限shell工具","pass":true,"detail":"status=200 args={\"city\":\"Beijing\"}（mock无法产生被转义坏的shell参数，门控逻辑为代码级确认：仅name===\"shell\"或以.shell结尾才清理）"}
+{"round":"R12","name":"B12 stop_reason length→max_tokens映射","pass":true,"detail":"映射代码行数=2（1134,4271） stop场景end_turn=end_turn（注：mock无length场景，length→max_tokens本身为代码级确认）"}
+{"round":"R13","name":"B13 模型名恰为-search时400","pass":true,"detail":"status=400 body={\"error\":{\"message\":\"模型名无效\",\"type\":\"proxy_error\",\"code\":400}}"}
+{"round":"R14","name":"B14 responses+非spark非流式usage回退","pass":true,"detail":"status=200 usage={\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}"}
+{"round":"R15","name":"chat流式纯文本(direct/mimo)","pass":true,"detail":"status=200 finish=stop usage={\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}"}
+{"round":"R16","name":"chat非流式纯文本(direct/mimo)","pass":true,"detail":"status=200 object=chat.completion"}
+{"round":"R17","name":"chat流式tool_call","pass":true,"detail":"status=200 tool={\"id\":\"call_mock_1\",\"name\":\"get_weather\",\"args\":\"{\\\"city\\\":\\\"Beijing\\\"}\"} finish=tool_calls"}
+{"round":"R18","name":"chat非流式tool_call","pass":true,"detail":"status=200 finish=tool_calls"}
+{"round":"R19","name":"chat工具结果回传(多轮)","pass":true,"detail":"status=200 text=\"MOCK-FINAL R19b [ECHO:72F]\" finish=stop"}
+{"round":"R20","name":"chat reasoning透传","pass":true,"detail":"status=200 reasoning=\"MOCK-REASONING MOCK-REASONING-2 \" finish=stop"}
+{"round":"R21","name":"chat spark翻译路径(chat→responses)","pass":true,"detail":"status=200 upstreamPath=/zen/v1/responses finish=stop usage={\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}"}
+{"round":"R22","name":"chat多轮tool往返(流式)","pass":true,"detail":"status=200 text=\"MOCK-FINAL R22b [ECHO:sunny]\" finish=stop"}
+{"round":"R23","name":"responses流式纯文本(spark直连)","pass":true,"detail":"status=200 text=\"MOCK-RESP-TEXT R23\""}
+{"round":"R24","name":"responses非流式纯文本(spark直连)","pass":true,"detail":"status=200 usage={\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}"}
+{"round":"R25","name":"responses流式function_call","pass":true,"detail":"status=200 name=get_weather args={\"city\":\"Beijing\"}"}
+{"round":"R26","name":"responses function_call结果回传","pass":true,"detail":"status=200 text=\"MOCK-FINAL R26b [ECHO:72F]\""}
+{"round":"R27","name":"responses reasoning透传","pass":true,"detail":"status=200 reasoning=\"MOCK-REASONING \""}
+{"round":"R28","name":"responses usage双命名(直通保留上游命名)","pass":true,"detail":"status=200 usage={\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}"}
+{"round":"R29","name":"responses空input直接400","pass":true,"detail":"status=400 body={\"error\":{\"message\":\"消息列表为空\",\"type\":\"proxy_error\",\"code\":400"}
+{"round":"R30","name":"responses超大input(100KB)","pass":true,"detail":"status=200 inputLen=100018"}
+{"round":"R31","name":"messages流式纯文本(spark)","pass":true,"detail":"status=200 stopReason=end_turn"}
+{"round":"R32","name":"messages非流式纯文本(spark)","pass":true,"detail":"status=200 stop=end_turn usage={\"input_tokens\":11,\"output_tokens\":7}"}
+{"round":"R33","name":"messages流式tool_use","pass":true,"detail":"status=200 name=get_weather args={\"city\":\"Beijing\"} stop=tool_use"}
+{"round":"R34","name":"messages tool_result回传","pass":true,"detail":"status=200 text=\"MOCK-FINAL R34 [ECHO:72F]\""}
+{"round":"R35","name":"messages mimo→chat翻译(非流式)","pass":true,"detail":"status=200 upstreamPath=/zen/v1/chat/completions stop=end_turn"}
+{"round":"R36","name":"messages非流式thinking在前","pass":true,"detail":"status=200 blocks=[\"thinking\",\"text\"]"}
+{"round":"R37","name":"messages stop_reason枚举(end_turn/tool_use)","pass":true,"detail":"text=end_turn tool=tool_use"}
+{"round":"R38","name":"messages max_tokens小值不误报截断","pass":true,"detail":"status=200 stop=end_turn（注：mock无法强制上游截断，真实length→max_tokens映射见R12代码确认）"}
+{"round":"R39","name":"messages多工具声明透传上游","pass":true,"detail":"status=200 上游工具=[\"get_weather\",\"get_time\",\"read\",\"shell\"]（注：mock每轮只回一个tool_call，并行多调用不可触发）"}
+{"round":"R40","name":"messages system提示词不破坏请求","pass":true,"detail":"status=200（注：上游请求体细节requests.jsonl未记录，system→instructions翻译为代码级确认）"}
+{"round":"R41","name":"fragname分片工具名组装","pass":true,"detail":"status=200 names=[\"get_weather\",\"webfetch\"] finish=tool_calls"}
+{"round":"R42","name":"B12端到端(流式)length→max_tokens","pass":true,"detail":"status=200 stop_reason=max_tokens"}
+{"round":"R43","name":"B12端到端(非流式)length→max_tokens","pass":true,"detail":"status=200 stop_reason=max_tokens"}
+{"round":"R44","name":"chat→responses翻转length→incomplete(非流式)","pass":true,"detail":"status=200 respStatus=incomplete reason=max_output_tokens"}
+{"round":"R45","name":"chat→responses翻转length→incomplete(流式)","pass":true,"detail":"status=200 hasIncomplete=true reason=max_output_tokens"}
+{"round":"R46","name":"并发forceSearch隔离(-search/普通互不串扰)","pass":true,"detail":"R46a=[\"read\",\"shell\",\"webfetch\",\"websearch\"] R46b=[\"read\",\"shell\"] R46c=[\"read\",\"shell\",\"webfetch\",\"websearch\"] R46d=[\"read\",\"shell\"]"}
+{"round":"R47","name":"chat+spark非流式tool_call","pass":true,"detail":"status=200 tool=get_weather finish=tool_calls"}
+{"round":"R48","name":"messages+mimo流式tool_use","pass":true,"detail":"status=200 name=get_weather stop=tool_use"}
+{"round":"R49","name":"responses+mimo流式function_call","pass":true,"detail":"status=200 name=get_weather args={\"city\":\"Beijing\"}"}
+{"round":"R50","name":"chat非流式reasoning组装","pass":true,"detail":"status=200 reasoning=\"MOCK-REASONING MOCK-REASONING-\""}
+{"round":"R51","name":"messages非流式content_filter映射","pass":true,"detail":"status=200 stop_reason=content_filter"}
+{"round":"R52","name":"chat→responses翻转content_filter→incomplete","pass":true,"detail":"status=200 respStatus=incomplete reason=content_filter"}

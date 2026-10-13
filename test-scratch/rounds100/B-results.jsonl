@@ -1,0 +1,30 @@
+{"round":"R41","name":"空body","pass":true,"detail":"status=400 body={\"error\":{\"message\":\"请求体为空或不是 JSON 对象\",\"type\":\"proxy_error\",\"code\":400}}"}
+{"round":"R42","name":"超大body(2MB)","pass":true,"detail":"status=200 aborted=false len=279 ok=true"}
+{"round":"R43","name":"畸形JSON","pass":true,"detail":"status=400 body={\"error\":{\"message\":\"Invalid JSON body\",\"type\":\"proxy_error\",\"code\":400}}"}
+{"round":"R44","name":"缺messages/input字段","pass":true,"detail":"status=200 body={\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion\",\"created\":1760310000,\"model\":\"mimo-v2.6-flash-free\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistan"}
+{"round":"R45","name":"messages为null","pass":true,"detail":"status=200 body={\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion\",\"created\":1760310000,\"model\":\"mimo-v2.6-flash-free\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistan"}
+{"round":"R46","name":"超长模型名(500字符)","pass":true,"detail":"status=200 upstreamModelLen=500 upstreamReqs=1"}
+{"round":"R47","name":"特殊字符模型名","pass":true,"detail":"4/4 不崩, 上游路径正常"}
+{"round":"R48","name":"usage命名4种组合","pass":true,"detail":"4/4 透传+归一化正常, 不崩"}
+{"round":"R49","name":"tool_calls稀疏索引[0,2,5]","pass":true,"detail":"status=200 idx=[0,2,5] finish=tool_calls tcs={\"0\":{\"id\":\"call_s0\",\"name\":\"get_weather\",\"args\":\"{\\\"city\\\":\\\"Beijing\\\"}\"},\"2\":{\"id\":\"call_s2\",\"name\":\"get_time\",\"args\":\"{\\\"tz\\\":\\\"UTC\\\"}\"},\"5\":{\"id\":\"call_s5\",\"name\":\"get_date\",\"args\":\"{\\\"fmt\\\":\\\"iso\\\"}\"}}"}
+{"round":"R50","name":"SSE截断(上游中途断流)","pass":true,"detail":"direct:aborted=false status=200 partial=true; translate:aborted=false status=200 body=data: {\"id\":\"chatcmpl-proxy-1791865929785\",\"object\":\"chat.completion.chunk\",\"created\":1791865929,\"model\":\"muse-spark-1.3"}
+{"round":"R51","name":"SSE乱序事件","pass":true,"detail":"status=200 text=\"MOCK-B-OOO B51 \" done=true"}
+{"round":"R52","name":"重复SSE事件id","pass":true,"detail":"status=200 text=\"MOCK-B-DUP B52 again \""}
+{"round":"R53","name":"空choices数组","pass":true,"detail":"status=200 text=\"MOCK-B-EC B53 \""}
+{"round":"R54","name":"delta为null的chunk","pass":true,"detail":"status=200 text=\"MOCK-B-ND B54 \""}
+{"round":"R55","name":"usage为字符串","pass":true,"detail":"status=200 downstreamUsage=\"oops-not-an-object\""}
+{"round":"R56","name":"tool参数非法JSON","pass":true,"detail":"status=200 tool={\"name\":\"get_weather\",\"args\":\"{not valid json!!!\"} finish=tool_calls（-search本地执行路径的代码兜底已静态确认: runProxyTool内try/catch）"}
+{"round":"R57","name":"messages含未知role","pass":true,"detail":"direct:status=200; translate:status=200 body={\"id\":\"resp_mock_1\",\"object\":\"chat.completion\",\"created\":1791865930,\"model\":\"muse-spark-1.3-contributor-free\",\"choices\":[{\"index\":"}
+{"round":"R58","name":"input为字符串(Responses)","pass":true,"detail":"status=200 deltas=\"MOCK-RESP-TEXT \""}
+{"round":"R59","name":"max_tokens负数/0/超大","pass":true,"detail":"-1/0/999999999 均不崩(状态已记录)"}
+{"round":"R60","name":"temperature越界","pass":true,"detail":"-1/2.5/\"abc\" 均不崩"}
+{"round":"R61","name":"2并发(1搜索+1普通)","pass":true,"detail":"2并发: 响应一一对应, 搜索注入隔离正确"}
+{"round":"R62","name":"5并发混合","pass":true,"detail":"5并发: 响应一一对应, 搜索注入隔离正确"}
+{"round":"R63","name":"10并发混合","pass":true,"detail":"10并发: 响应一一对应, 搜索注入隔离正确"}
+{"round":"R64","name":"20并发混合","pass":true,"detail":"20并发: 响应一一对应, 搜索注入隔离正确"}
+{"round":"R65","name":"50并发混合","pass":true,"detail":"50并发: 响应一一对应, 搜索注入隔离正确"}
+{"round":"R66","name":"连续20次交替search/普通(requestForceSearch残留)","pass":true,"detail":"20/20 注入标志正确, 无残留"}
+{"round":"R67","name":"同一模型名并发(±search)","pass":true,"detail":"6/6 注入隔离正确"}
+{"round":"R68","name":"并发下usage日志不串行","pass":true,"detail":"12/12 响应usage对得上; 日志 入11x6 入41x6"}
+{"round":"R69","name":"并发+上游延迟不超时错乱","pass":true,"detail":"5/5 完成, 总耗时2594ms(上游各延迟2.5s)"}
+{"round":"R70","name":"50并发全search","pass":true,"detail":"50/50 终答正常, follow-up 50/50, webfetch本地执行50/50"}

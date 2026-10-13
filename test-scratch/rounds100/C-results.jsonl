@@ -1,0 +1,43 @@
+{"round":"R71","name":"Anthropic SSE thinking→text→tool_use 开闭顺序","pass":true,"detail":"status=200 order=[start0:thinking stop0 start1:text stop1 start2:tool_use stop2] probs=[无]"}
+{"round":"R72","name":"流结束无未关闭 block（含上游空 body 兜底）","pass":true,"detail":"status=200 starts=0 stops=0 message_start=true message_stop=true bodyLen=435"}
+{"round":"R73","name":"chat chunk 格式：id/created/model/object 齐全","pass":true,"detail":"status=200 chunks=3 usageChunks=1 probs=[无]（usage 块 choices:[] 为 OpenAI 原生约定）"}
+{"round":"R74","name":"三接口流式正确终结","pass":true,"detail":"chat[DONE]=true responses[completed]=true（协议无[DONE]） anthropic[message_stop]=true"}
+{"round":"R75","name":"usage 只在终态出现一次","pass":true,"detail":"chat/responses/anthropic 各 1 次终态 usage"}
+{"round":"R76","name":"非流式 chat 含完整 message+usage","pass":true,"detail":"status=200 object=chat.completion role=assistant contentLen=19 usage={\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}"}
+{"round":"R77","name":"非流式 responses 含 output+usage","pass":true,"detail":"status=200 object=response outputLen=1 usage={\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}"}
+{"round":"R78","name":"非流式 anthropic 含 content+stop_reason+usage","pass":true,"detail":"status=200 type=message stop=end_turn usage={\"input_tokens\":11,\"output_tokens\":7}"}
+{"round":"R79","name":"tool_call id 请求→上游→客户端不断链","pass":true,"detail":"直接/翻译两路径 id=call_mock_1 全链一致"}
+{"round":"R80","name":"reasoning 内容不丢不串（三接口）","pass":true,"detail":"reasoning 与正文各自完整、未串扰"}
+{"round":"R81","name":"上游400透传","pass":true,"detail":"status=400(期望400) msg=\"mock bad request\" type=invalid_request_error 无堆栈泄露=true"}
+{"round":"R82","name":"上游401透传","pass":true,"detail":"status=401(期望401) msg=\"mock unauthorized: bad key\" type=authentication_error 无堆栈泄露=true"}
+{"round":"R83","name":"上游403透传","pass":true,"detail":"status=403(期望403) msg=\"mock forbidden: model not allowed\" type=permission_error 无堆栈泄露=true"}
+{"round":"R84","name":"上游429透传","pass":true,"detail":"status=429(期望429) msg=\"mock rate limited\" type=rate_limit_error 无堆栈泄露=true"}
+{"round":"R85","name":"上游500透传","pass":true,"detail":"status=500(期望500) msg=\"mock internal error\" type=undefined 无堆栈泄露=true"}
+{"round":"R86","name":"上游502透传","pass":true,"detail":"status=502(期望502) msg=\"mock bad gateway\" type=server_error 无堆栈泄露=true"}
+{"round":"R81b","name":"上游500透传(responses非流式)","pass":true,"detail":"status=500(期望500) msg=\"mock internal error\" type=undefined 无堆栈泄露=true"}
+{"round":"R84b","name":"上游429透传(messages流式)","pass":true,"detail":"status=429(期望429) msg=\"mock rate limited\" type=rate_limit_error 无堆栈泄露=true"}
+{"round":"R87","name":"上游 30s 慢响应不挂起 + 客户端断开不崩","pass":true,"detail":"慢响应: status=200 耗时=30.0s 内容完整=true | 客户端断开已中止=true proxy存活=true 后续请求=200"}
+{"round":"R88","name":"上游空 body 不崩不挂起","pass":true,"detail":"status=200 ctype=text/event-stream bodyLen=0 有[DONE]=false（空流未补[DONE]，见 C-bugs.md）"}
+{"round":"R89","name":"上游 HTML 错误页原样透传","pass":true,"detail":"status=200 ctype=text/html body=<html><body><h1>mock html error page</h1></body></html>"}
+{"round":"R90","name":"上游分块慢响应：真流式透传","pass":true,"detail":"status=200 首块=16ms 总耗时=1217ms data行=4 内容完整=true 真流式=true"}
+{"round":"R91","name":"上游 200 非 JSON 原样透传","pass":true,"detail":"status=200 ctype=text/plain body=this is not json, just plain text from mock"}
+{"round":"R92","name":"上游 302 重定向被跟随、无挂起","pass":true,"detail":"status=200 跟随后内容完整=true（fetch 默认跟随跳转）"}
+{"round":"R93","name":"webfetch 内网地址被拦截（默认）","pass":true,"detail":"127.0.0.1/10.0.0.1/192.168.1.1 均被 SSRF 拦截"}
+{"round":"R94","name":"webfetch 外网地址正常放行","pass":true,"detail":"status=200 抓到Example Domain=true 被误拦=false"}
+{"round":"R95","name":"仓库无硬编码密钥","pass":true,"detail":"扫描 9 个文件，无硬编码 key/token/私钥"}
+{"round":"R96","name":"-search 后缀永不进入上游请求体","pass":true,"detail":"检查 137 个上游请求体（含 -search 触发的 R93/R94），model 结尾均无 -search"}
+{"round":"R97","name":"CORS OPTIONS 预检头正确","pass":true,"detail":"status=204 allow-origin=* methods=GET, POST, OPTIONS headers=* max-age=86400"}
+{"round":"R98","name":"错误响应不泄露堆栈/内网信息","pass":true,"detail":"上游500=500 畸形JSON=400 空模型=400，均无堆栈/路径泄露"}
+{"round":"R99","name":"模型名变体鲁棒性","pass":true,"detail":"全部完成无挂起 | 大写→http200/上游model=\"MIMO-V2.6-FLASH-FREE\" | 首尾空格→http200/上游model=\" mimo-v2.6-flash-free \" | 双-search→http200/上游model=\"mimo-v2.6-flash-free\" | -search在中间→http200/上游model=\"mimo-search-v2.6-flash-free\" | 大写后缀→http200/上游model=\"mimo-v2.6-flash-free-SEARCH\" | -search在开头→http200/上游model=\"-searchmimo-v2.6-flash-free\""}
+{"round":"R100","name":"stop_reason 全枚举映射","pass":true,"detail":"全部映射正确 | {\"chat/text\":\"stop\",\"chat/len\":\"length\",\"chat/toolcall\":\"tool_calls\",\"chat/cf\":\"content_filter\",\"spark-chat/text\":\"stop\",\"spark-chat/len\":\"length\",\"spark-chat/toolcall\":\"tool_calls\",\"spark-chat/cf\":\"content_filter\",\"anthropic/text\":\"end_turn\",\"anthropic/len\":\"max_tokens\",\"anthropic/toolcall\":\"tool_use\",\"anthropic/cf\":\"content_filter\",\"error\":\"N/A（协议无此终结符，错误走HTTP状态码）\"}"}
+{"round":"R101","name":"Anthropic 双 tool_use block 开闭+参数","pass":true,"detail":"2 个 tool_use block 各自 start/delta/stop 完整，参数拼装正确"}
+{"round":"R102","name":"thinking→tool_use 直接切换（无 text）","pass":true,"detail":"顺序 [start0:thinking stop0: start1:tool_use stop1:] 合法，thinking 先关再开 tool_use"}
+{"round":"R103","name":"chat 双 tool_calls id/参数不断链","pass":true,"detail":"index0/1 的 id·name·args 全部透传正确"}
+{"round":"R104","name":"非流式 anthropic thinking 置首","pass":true,"detail":"status=200 content[0]=thinking thinking=\"MOCK-REASONING \" content[1]=text stop=end_turn"}
+{"round":"R105","name":"上游 400 HTML 错误体被归一化透传","pass":true,"detail":"status=400 msg=\"<html><body><h1>400 Bad Request from mock gateway</h1></body\" 无泄露=true"}
+{"round":"R106","name":"空消息列表被 proxy 自身 400 拒绝","pass":true,"detail":"status=400 body={\"error\":{\"message\":\"消息列表为空\",\"type\":\"proxy_error\",\"code\":400}}"}
+{"round":"R107","name":"CORS 头覆盖 GET 模型列表 + 各接口预检","pass":true,"detail":"GET/OPTIONS 各路径 CORS 头齐全"}
+{"round":"R108","name":"webfetch 跳转进内网被拦截","pass":true,"detail":"status=200 跳转链第二跳被拦=true"}
+{"round":"R109","name":"非流式 responses function_call 完整","pass":false,"detail":"status=200 fn=undefined args=undefined call_id=undefined status=completed"}
+{"round":"R110","name":"非流式 chat 翻译路径 tool_call 完整","pass":false,"detail":"status=200 tool=undefined id=undefined finish=stop usage={\"prompt_tokens\":21,\"completion_tokens\":9,\"total_tokens\":30}"}
+{"round":"R111","name":"上游 200 空 JSON 非流式透传不崩","pass":true,"detail":"status=200 body={}"}

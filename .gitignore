@@ -1,3 +1,7 @@
 node_modules/
 .session-capture/
 session.json
+
+# API key file (never commit)
+key
+**/key
