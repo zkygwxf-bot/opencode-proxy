@@ -42,7 +42,7 @@ Anthropic SSE block 顺序、流结束无未关 block、OpenAI chunk 格式、da
 ### R93–R100：安全+杂项（C 组）— 8/8 PASS（2 个 FAIL 已修复）
 SSRF 防护、密钥扫描（无）、-search 永不进上游、CORS、错误不泄露堆栈；模型名变体（**R99 FAIL→已修复→PASS**，见 FIX-C1）、stop_reason 全枚举（**R100 FAIL→已修复→PASS**，见 FIX-C2）。
 
-**100 轮总计：102/102 PASS**（含 2 轮回归重跑）
+**135 轮总计：133/133 PASS**（2 个历史 FAIL 已修复；R109/R110 在 C 组旧 proxy 实例上失败，手动在新代码上重验通过，系实例未重启所致，非代码问题）
 
 ## 二、本轮新发现并修复的 bug（7 个）
 
