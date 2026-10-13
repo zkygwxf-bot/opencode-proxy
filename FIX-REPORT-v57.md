@@ -68,7 +68,12 @@
 | 6 | 工具名转换路径审计 | collectToolNames/unprefixToolName | ✅ 通过，default. 前缀剥离逻辑正确 |
 | 7 | Responses SSE 事件覆盖 | 6 种核心事件类型 | ✅ 通过；response.failed 等信息性事件未处理但不影响核心功能 |
 | 8 | install.sh 检查 | 是否阻碍新版安装 | ✅ 通过（文件指向旧 v3 ZIP 但当前分发不用它，按任务要求不动） |
-| 9 | | | |
+| 9 | ZIP 重建验证 | v57 ZIP 含修复后 proxy.mjs + node --check | ✅ 通过，已本地提交 6b76214（未 push） |
+| 10 | 本地启动冒烟测试 | PORT=18788 启动，检查启动日志 | ✅ 通过，正常启动 |
+| 11 | 健康检查+模型列表 | /health + /v1/models | ✅ 通过，返回正常 |
+| 12 | webfetch SSRF 防护 | isPrivateIpLiteral/ssrfBlockReason | ✅ 通过，私网IP/DNS重绑定/跳转链全覆盖 |
+| 13 | 硬编码密钥扫描 | 全文件密钥模式 | ✅ 通过，无硬编码密钥 |
+| 14 | | | |
 | ... | | | |
 
 （待补充）
