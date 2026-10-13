@@ -1604,14 +1604,17 @@ async function streamResponsesDirectWithIntercept(upstream, emit, interceptNames
     if (obj.type === "response.completed" || obj.type === "response.incomplete") {
       const u = obj.response?.usage;
       if (timing && u && typeof u === "object") {
+        // Responses API 直通路径：usage 可能是 input_tokens/output_tokens（Responses 命名）
+        // 也可能是 prompt_tokens/completion_tokens（OpenAI 命名），都要回退
+        const _in = u.input_tokens ?? u.prompt_tokens;
+        const _out = u.output_tokens ?? u.completion_tokens;
         timing.usage = {
-          prompt_tokens: u.input_tokens,
-          completion_tokens: u.output_tokens,
+          prompt_tokens: _in,
+          completion_tokens: _out,
           total_tokens:
             u.total_tokens ??
-            (typeof u.input_tokens === "number" &&
-            typeof u.output_tokens === "number"
-              ? u.input_tokens + u.output_tokens
+            (typeof _in === "number" && typeof _out === "number"
+              ? _in + _out
               : undefined),
           ...(typeof u.input_tokens_details?.cached_tokens === "number"
             ? {
@@ -1745,14 +1748,16 @@ function sseToResponse(sseText, fallbackModel, knownNames) {
           cached = dc;
         }
         usage = {
-          // 缺字段保留 undefined（日志显示"?"），不用 0 冒充
-          input_tokens: resp.usage.input_tokens,
-          output_tokens: resp.usage.output_tokens,
+          // 缺字段保留 undefined（日志显示"?"），不用 0 冒充；
+          // 兼容 Responses 式 input_tokens 与 OpenAI 式 prompt_tokens 两种命名
+          input_tokens: resp.usage.input_tokens ?? resp.usage.prompt_tokens,
+          output_tokens: resp.usage.output_tokens ?? resp.usage.completion_tokens,
           total_tokens:
             resp.usage.total_tokens ??
-            (typeof resp.usage.input_tokens === "number" &&
-            typeof resp.usage.output_tokens === "number"
-              ? resp.usage.input_tokens + resp.usage.output_tokens
+            (typeof (resp.usage.input_tokens ?? resp.usage.prompt_tokens) === "number" &&
+            typeof (resp.usage.output_tokens ?? resp.usage.completion_tokens) === "number"
+              ? (resp.usage.input_tokens ?? resp.usage.prompt_tokens) +
+                (resp.usage.output_tokens ?? resp.usage.completion_tokens)
               : undefined),
         };
         if (cached !== null) {
@@ -2822,8 +2827,8 @@ function responseToChatCompletion(resp, fallbackModel, knownNames) {
     ],
   };
   if (resp.usage) {
-    const input = resp.usage.input_tokens;
-    const output = resp.usage.output_tokens;
+    const input = resp.usage.input_tokens ?? resp.usage.prompt_tokens;
+    const output = resp.usage.output_tokens ?? resp.usage.completion_tokens;
     out.usage = {
       // 缺字段保留 undefined（与 sseToResponse 一致），不用 0 冒充
       prompt_tokens: input,
@@ -2963,11 +2968,13 @@ function anthropicToResponsesBody(body) {
 }
 
 // anthropicToResponsesBody 的包装：同时返回实际注入的反代工具名（供拦截用）
-function anthropicToResponsesBodyWithNames(body) {
+// forceSearch 必须显式传入（调用处是同步的，但读模块级 requestForceSearch
+// 在并发下是隐患，显式传参彻底断掉这条链）
+function anthropicToResponsesBodyWithNames(body, forceSearch) {
   const rb = anthropicToResponsesBody(body);
   // ensureResponsesTools 已在内部调用，这里重新计算实际注入的（rb.tools 已合并）
   // v42: 与 ensureResponsesTools 的注入逻辑一致（只在 forceSearch 时注入）
-  const proxyDefs = requestForceSearch ? ALL_PROXY_TOOLS_RESPONSES : [];
+  const proxyDefs = forceSearch ? ALL_PROXY_TOOLS_RESPONSES : [];
   const names = new Set();
   const toolNames = new Set((rb.tools || []).map((t) => t?.name).filter(Boolean));
   for (const pt of proxyDefs) {
@@ -3014,8 +3021,8 @@ function responseToAnthropic(resp, fallbackModel, knownNames) {
     content,
     stop_reason: stopReason,
     usage: {
-      input_tokens: resp.usage?.input_tokens ?? 0,
-      output_tokens: resp.usage?.output_tokens ?? 0,
+      input_tokens: resp.usage?.input_tokens ?? resp.usage?.prompt_tokens ?? 0,
+      output_tokens: resp.usage?.output_tokens ?? resp.usage?.completion_tokens ?? 0,
       // Anthropic 原生缓存字段，语义与 cached_tokens 一致
       ...(typeof resp.usage?.input_tokens_details?.cached_tokens === "number"
         ? {
@@ -3405,7 +3412,7 @@ const server = http.createServer((req, res) => {
         translateToResponses = true;
         isAnthropic = true;
         upstreamPath = "/zen/v1/responses";
-        const aw = anthropicToResponsesBodyWithNames(body);
+        const aw = anthropicToResponsesBodyWithNames(body, forceSearch);
         responsesBody = aw.body;
         proxyInterceptNames = aw.proxyNames;
       } else {
@@ -4124,8 +4131,8 @@ const server = http.createServer((req, res) => {
               content,
               stop_reason: content.some((c) => c.type === "tool_use") ? "tool_use" : "end_turn",
               usage: {
-                input_tokens: chatObj.usage?.prompt_tokens ?? 0,
-                output_tokens: chatObj.usage?.completion_tokens ?? 0,
+                input_tokens: chatObj.usage?.prompt_tokens ?? chatObj.usage?.input_tokens ?? 0,
+                output_tokens: chatObj.usage?.completion_tokens ?? chatObj.usage?.output_tokens ?? 0,
               },
             };
             zenLog({ seq, ttftMs: -1, totalMs: Date.now() - timing.t0, usage: timing.usage, isBg: false });
