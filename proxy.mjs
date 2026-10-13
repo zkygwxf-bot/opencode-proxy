@@ -423,7 +423,7 @@ function sanitizeToolChoice(body) {
   }
 }
 
-function ensureChatTools(body) {
+function ensureChatTools(body, skipProxyTools = false) {
   const tools = Array.isArray(body.tools) ? body.tools : [];
   if (tools.length === 0) {
     // No app tools: disguise only (the free-tier gate needs the read/shell
@@ -457,7 +457,9 @@ function ensureChatTools(body) {
     );
     // v42: 只有 -search 后缀或客户端原生搜索请求时才注入；否则不注入，
     // 模型就不会主动搜索。之前 PROXY_TOOLS_CHAT 非空导致总是注入。
-    const proxyTools = requestForceSearch ? ALL_PROXY_TOOLS_CHAT : [];
+    // v57.1: translateToChat 路径传 skipProxyTools=true，不注入（该路径无拦截逻辑，
+    // 注入了模型调用后也执行不了，反而透传坏的 tool_call 给客户端）。
+    const proxyTools = requestForceSearch && !skipProxyTools ? ALL_PROXY_TOOLS_CHAT : [];
     for (const pt of proxyTools) {
       const n = pt?.function?.name;
       if (n && !names.has(n)) {
@@ -977,8 +979,8 @@ async function streamChatToResponses(upstream, emit, model, timing) {
     output.push({ type: "function_call", id: tc.id, call_id: tc.id, name: tc.name, arguments: tc.arguments });
   }
   const respUsage = usage ? {
-    input_tokens: usage.prompt_tokens,
-    output_tokens: usage.completion_tokens,
+    input_tokens: usage.prompt_tokens ?? usage.input_tokens,
+    output_tokens: usage.completion_tokens ?? usage.output_tokens,
     total_tokens: usage.total_tokens,
   } : null;
   if (timing && respUsage) {
@@ -1071,7 +1073,7 @@ async function streamChatToAnthropic(upstream, emit, model, timing) {
     toolCalls.push(entry);
     emitEvent({ type: "content_block_stop", index: entry.blockIndex });
   }
-  const stopReason = toolCalls.length > 0 ? "tool_use" : "end_turn";
+  const stopReason = toolCalls.length > 0 ? "tool_use" : finishReason === "length" ? "max_tokens" : "end_turn";
   const outUsage = {
     input_tokens: usage?.prompt_tokens ?? 0,
     output_tokens: usage?.completion_tokens ?? 0,
@@ -1274,6 +1276,7 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
     ) {
       ensureStart();
       if (timing && !timing.firstTokenAt) timing.firstTokenAt = Date.now();
+      closeThinking();
       if (!textOpen) {
         textOpen = true;
         ev("content_block_start", {
@@ -1294,6 +1297,7 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
     ) {
       ensureStart();
       if (!thinkingOpen) {
+        closeText();
         thinkingOpen = true;
         thinkingBlockIndex = blockIndex++;
         ev("content_block_start", {
@@ -1329,6 +1333,8 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
       const bi = blockIndex++;
       toolBlocks.set(obj.output_index, bi);
       hasTools = true;
+      closeThinking();
+      closeText();
       ev("content_block_start", {
         type: "content_block_start",
         index: bi,
@@ -1430,6 +1436,8 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
         streamDone = true;
         return;
       }
+      closeThinking();
+      closeText();
       // Anthropic 原生缓存字段：cache_read_input_tokens，语义与 cached_tokens 一致
       const dcDelta = usage?.input_tokens_details?.cached_tokens;
       const incompleteReason = obj.response?.incomplete_details?.reason;
@@ -1477,6 +1485,11 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
     if (!textOpen) return;
     textOpen = false;
     ev("content_block_stop", { type: "content_block_stop", index: blockIndex++ });
+  };
+  const closeThinking = () => {
+    if (!thinkingOpen) return;
+    thinkingOpen = false;
+    ev("content_block_stop", { type: "content_block_stop", index: thinkingBlockIndex });
   };
   try {
     for (;;) {
@@ -1892,9 +1905,13 @@ function sseToChatCompletion(sseText, fallbackModel) {
   const reasoning = reasoningParts.join("");
   const message = { role: "assistant", content };
   if (reasoning) message.reasoning_content = reasoning;
+  const cleanToolCalls = toolCalls.filter(Boolean);
   // v56: 清理被转义坏的 shell 参数（如 /\"echo ok\"/ → echo ok）
-  for (const tc of toolCalls) {
+  // v57.1: 只对 shell 工具清理（#4）；稀疏索引空洞已过滤（#9）
+  for (const tc of cleanToolCalls) {
     try {
+      const toolName = tc.function?.name || "";
+      if (toolName !== "shell" && !toolName.endsWith(".shell")) continue;
       const args = JSON.parse(tc.function.arguments || "{}");
       if (args.command && typeof args.command === "string") {
         // 去掉 /\" 前缀和 \"/ 后缀
@@ -1905,7 +1922,7 @@ function sseToChatCompletion(sseText, fallbackModel) {
       }
     } catch {}
   }
-  if (toolCalls.length) message.tool_calls = toolCalls;
+  if (cleanToolCalls.length) message.tool_calls = cleanToolCalls;
   return {
     id,
     object: "chat.completion",
@@ -3324,6 +3341,9 @@ const server = http.createServer((req, res) => {
       // RikkaHub"模型搜索"开关（v36 原生转换）同样开启。都不选则不注入（v42）。
       if (typeof body.model === "string" && body.model.endsWith("-search")) {
         body.model = body.model.slice(0, -"-search".length);
+        if (!body.model) {
+          return sendErrorJson(res, 400, "模型名无效");
+        }
         requestForceSearch = true;
       } else {
         requestForceSearch = false;
@@ -3422,8 +3442,12 @@ const server = http.createServer((req, res) => {
         upstreamPath = "/zen/v1/chat/completions";
         chatBody = anthropicToChatBody(body);
         // v47.2: 补上伪装工具（read/shell），否则上游免费层直接 403；
-        // 同时按 -search 后缀注入 websearch/webfetch，并设置 stream/stream_options。
-        proxyInterceptNames = ensureChatTools(chatBody);
+        // v57.1: translateToChat 无拦截逻辑，skipProxyTools=true 不注入搜索工具；
+        // -search 对非 spark 模型暂不支持，打日志说明。
+        if (forceSearch) {
+          console.log("注意：-search 搜索暂不支持非 spark 模型，已跳过搜索工具注入");
+        }
+        proxyInterceptNames = ensureChatTools(chatBody, true);
       }
     } else if (
       upstreamPath === "/zen/v1/responses" &&
@@ -3435,8 +3459,11 @@ const server = http.createServer((req, res) => {
       translateToChat = true;
       upstreamPath = "/zen/v1/chat/completions";
       chatBody = responsesToChatBody(body);
-      // v47.2: 同上，补伪装工具防 403，-search 时注入搜索工具。
-      proxyInterceptNames = ensureChatTools(chatBody);
+      // v47.2: 同上，补伪装工具防 403；v57.1: 不注入搜索工具（无拦截逻辑）。
+      if (forceSearch) {
+        console.log("注意：-search 搜索暂不支持非 spark 模型，已跳过搜索工具注入");
+      }
+      proxyInterceptNames = ensureChatTools(chatBody, true);
     } else if (
       upstreamPath === "/zen/v1/chat/completions" &&
       body &&
@@ -4110,6 +4137,7 @@ const server = http.createServer((req, res) => {
             // chat → Anthropic
             const content = [];
             const msg = chatObj.choices?.[0]?.message || {};
+            const _fr = chatObj.choices?.[0]?.finish_reason;
             if (typeof msg.content === "string" && msg.content) {
               content.push({ type: "text", text: msg.content });
             }
@@ -4129,7 +4157,7 @@ const server = http.createServer((req, res) => {
               role: "assistant",
               model: targetModel,
               content,
-              stop_reason: content.some((c) => c.type === "tool_use") ? "tool_use" : "end_turn",
+              stop_reason: content.some((c) => c.type === "tool_use") ? "tool_use" : _fr === "length" ? "max_tokens" : "end_turn",
               usage: {
                 input_tokens: chatObj.usage?.prompt_tokens ?? chatObj.usage?.input_tokens ?? 0,
                 output_tokens: chatObj.usage?.completion_tokens ?? chatObj.usage?.output_tokens ?? 0,
