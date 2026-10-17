@@ -4062,9 +4062,13 @@ const server = http.createServer((req, res) => {
         if (Array.isArray(body.tools)) {
           const _kept = [];
           for (const t of body.tools) {
+            // v67: 识别放宽为 web_search 前缀——RikkaHub 新版发的带日期型号
+            //（web_search_2025_08_26 / web_search_preview_2025_03_11）旧版只认
+            // 两个老型号、会把新版搜索工具漏掉，导致选了模型搜索却不生效。
             if (
               t &&
-              (t.type === "web_search" || t.type === "web_search_preview")
+              typeof t.type === "string" &&
+              t.type.startsWith("web_search")
             ) {
               _nativeSearch = true;
               continue; // 剥掉：上游不认，反代用内置搜索代替
