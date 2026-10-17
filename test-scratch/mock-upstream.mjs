@@ -88,7 +88,7 @@ function chatSSE(body, scenario, mark) {
   const model = body.model || "m";
   const fu = isFollowUp(body);
   // 未知 scenario（如 slow 延迟后）按 text 处理
-  const scn = fu ? "final" : ["text","toolcall","searchcall","reasoning","final","fetchprobe","len","cf","fragname","twotools"].includes(scenario) ? scenario : "text";
+  const scn = scenario === "searchloop" ? "searchloop" : fu ? "final" : ["text","toolcall","searchcall","reasoning","final","fetchprobe","len","cf","fragname","twotools"].includes(scenario) ? scenario : "text";
   const name = clientToolName(body);
   let s = "";
   const done = () => (s += "data: [DONE]\n\n");
@@ -160,6 +160,14 @@ function chatSSE(body, scenario, mark) {
     s += cc(id, model, {}, "tool_calls");
     s += cUsage(id, model, { input_tokens: 91, output_tokens: 33, total_tokens: 124 });
     done();
+  } else if (scn === "searchloop") {
+    // D组: 每轮都调 webfetch（含 follow-up），测 proxy 5 轮上限
+    const args = JSON.stringify({ url: "http://127.0.0.1:18901/page", format: "text" });
+    s += cc(id, model, { role: "assistant", tool_calls: [{ index: 0, id: "call_mock_loop", type: "function", function: { name: "webfetch", arguments: "" } }] });
+    s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: args } }] });
+    s += cc(id, model, {}, "tool_calls");
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 11, total_tokens: 72 });
+    done();
   } else if (scn === "final") {
     s += cc(id, model, { role: "assistant", content: `MOCK-FINAL ${mark}${echoOutputs(body)}` });
     s += cc(id, model, {}, "stop");
@@ -224,6 +232,14 @@ function respSSE(body, scenario, mark) {
     textDeltas("MOCK-REASON-DONE");
     textDone("MOCK-REASON-DONE");
     completed(usage(41, 15, 56));
+  } else if (scn === "searchloop") {
+    // D组: 每轮都调 webfetch（含 follow-up），测 proxy 5 轮上限
+    const args = JSON.stringify({ url: "http://127.0.0.1:18901/page", format: "text" });
+    s += cc(id, model, { role: "assistant", tool_calls: [{ index: 0, id: "call_mock_loop", type: "function", function: { name: "webfetch", arguments: "" } }] });
+    s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: args } }] });
+    s += cc(id, model, {}, "tool_calls");
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 11, total_tokens: 72 });
+    done();
   } else if (scn === "final") {
     const ft = `MOCK-FINAL ${mark}${echoOutputs(body)}`;
     s += created(); msgAdded();

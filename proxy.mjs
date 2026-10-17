@@ -3678,12 +3678,9 @@ const server = http.createServer((req, res) => {
         upstreamPath = "/zen/v1/chat/completions";
         chatBody = anthropicToChatBody(body);
         // v47.2: 补上伪装工具（read/shell），否则上游免费层直接 403；
-        // v57.1: translateToChat 无拦截逻辑，skipProxyTools=true 不注入搜索工具；
-        // -search 对非 spark 模型暂不支持，打日志说明。
-        if (forceSearch) {
-          console.log("注意：-search 搜索暂不支持非 spark 模型，已跳过搜索工具注入");
-        }
-        proxyInterceptNames = ensureChatTools(chatBody, true);
+        // v63: 翻译路径搜索拦截已接上（与直连 chat 同款 agentic loop），
+        // forceSearch 时注入搜索工具，不再跳过。
+        proxyInterceptNames = ensureChatTools(chatBody, !forceSearch);
       }
     } else if (
       upstreamPath === "/zen/v1/responses" &&
@@ -3695,11 +3692,8 @@ const server = http.createServer((req, res) => {
       translateToChat = true;
       upstreamPath = "/zen/v1/chat/completions";
       chatBody = responsesToChatBody(body);
-      // v47.2: 同上，补伪装工具防 403；v57.1: 不注入搜索工具（无拦截逻辑）。
-      if (forceSearch) {
-        console.log("注意：-search 搜索暂不支持非 spark 模型，已跳过搜索工具注入");
-      }
-      proxyInterceptNames = ensureChatTools(chatBody, true);
+      // v47.2: 同上，补伪装工具防 403；v63: 搜索拦截已接上，forceSearch 时注入。
+      proxyInterceptNames = ensureChatTools(chatBody, !forceSearch);
     } else if (
       upstreamPath === "/zen/v1/chat/completions" &&
       body &&
@@ -4343,28 +4337,207 @@ const server = http.createServer((req, res) => {
       // 上游走的是 chat，客户端要的是 Responses 或 Anthropic 格式。
       if (translateToChat) {
         const targetModel = body?.model || "unknown";
+        // v63: 翻译路径搜索拦截名集合（与直连 chat 路径同口径：搜索开才有，
+        // 且去掉客户端自带同名工具）。size===0 时走 v62 的直接翻译。
+        const interceptBaseX = forceSearch ? ALL_PROXY_TOOL_NAMES : new Set();
+        const interceptNamesX = new Set(
+          [...interceptBaseX].filter((n) => !clientToolNames.has(n))
+        );
+        const knownX = collectToolNames(chatBody, forceSearch);
         if (clientWantsStream) {
           res.writeHead(upstream.status, {
             "content-type": "text/event-stream",
             "cache-control": "no-cache",
             connection: "keep-alive",
           });
-          if (isAnthropic) {
-            const r = await streamChatToAnthropic(
-              upstream,
-              (c) => res.write(c),
-              targetModel,
-              timing
-            );
-            void r;
+          if (interceptNamesX.size === 0) {
+            // 无搜索：v62 行为，直接翻译透传
+            if (isAnthropic) {
+              const r = await streamChatToAnthropic(
+                upstream,
+                (c) => res.write(c),
+                targetModel,
+                timing
+              );
+              void r;
+            } else {
+              const r = await streamChatToResponses(
+                upstream,
+                (c) => res.write(c),
+                targetModel,
+                timing
+              );
+              void r;
+            }
           } else {
-            const r = await streamChatToResponses(
-              upstream,
-              (c) => res.write(c),
-              targetModel,
-              timing
-            );
-            void r;
+            // v63: 搜索开：chat 层 agentic loop（与直连 chat 同款），
+            // 末轮 SSE 翻译成下游格式发出。proxy 工具调用被拦截本地执行，
+            // 下游只看到最终结果，绝不漏出 proxy tool_call。
+            let currentMessagesX = Array.isArray(chatBody.messages)
+              ? chatBody.messages
+              : [];
+            let totalUsageX = null;
+            let finalSseX = null;
+            let failedX = false;
+            for (let roundX = 0; roundX < 5; roundX++) {
+              let upX = upstream;
+              if (roundX > 0) {
+                upX = await fetch(UPSTREAM + upstreamPath, {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    ...chatBody,
+                    messages: currentMessagesX,
+                  }),
+                  duplex: "half",
+                  signal: AbortSignal.any([
+                    ac.signal,
+                    AbortSignal.timeout(300000),
+                  ]),
+                });
+                if (!upX.ok) {
+                  console.error(`内置工具 follow-up 上游报错 ${upX.status}`);
+                  failedX = true;
+                  break;
+                }
+              }
+              // tee：拦截判定的同时保留本轮完整 SSE 文本
+              const [sXa, sXb] = upX.body.tee();
+              const rX = await streamChatDirectWithIntercept(
+                new Response(sXa, {
+                  headers: { "content-type": "text/event-stream" },
+                }),
+                () => {},
+                targetModel,
+                timing,
+                interceptNamesX,
+                knownX
+              );
+              totalUsageX = mergeUsageSum(totalUsageX, timing.usage);
+              timing.usage = null;
+              const thisSseX = await new Response(sXb).text();
+              if (rX.intercepted.length === 0) {
+                finalSseX = thisSseX;
+                break;
+              }
+              const outputsX = [];
+              for (const call of rX.intercepted) {
+                outputsX.push(
+                  await runProxyTool(
+                    call.name,
+                    call.arguments,
+                    seq,
+                    ac.signal,
+                    forceSearch
+                  )
+                );
+              }
+              const callsX = rX.intercepted.map((c) => ({
+                id: c.call_id || `call_proxy_${++proxyCallSeq}`,
+                name: c.name,
+                arguments: c.arguments,
+              }));
+              // chat 格式 follow-up：assistant tool_calls + tool 结果消息
+              currentMessagesX = [
+                ...currentMessagesX,
+                {
+                  role: "assistant",
+                  tool_calls: callsX.map((c) => ({
+                    id: c.id,
+                    type: "function",
+                    function: { name: c.name, arguments: c.arguments },
+                  })),
+                },
+                ...callsX.map((c, i) => ({
+                  role: "tool",
+                  tool_call_id: c.id,
+                  content: outputsX[i] ?? "",
+                })),
+              ];
+              if (roundX === 4) {
+                // 5 轮上限：最后一轮 follow-up 不再拦截，直接收尾
+                console.warn(
+                  "内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾"
+                );
+                try {
+                  const finalX = await fetch(UPSTREAM + upstreamPath, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({
+                      ...chatBody,
+                      messages: currentMessagesX,
+                    }),
+                    duplex: "half",
+                    signal: AbortSignal.any([
+                      ac.signal,
+                      AbortSignal.timeout(300000),
+                    ]),
+                  });
+                  if (finalX.ok) {
+                    finalSseX = (await readUpstreamBody(finalX)).toString();
+                    // 收尾轮没走拦截循环，它的 usage 在此补入 totalUsageX，
+                    // 否则末轮 token 会被漏记。
+                    totalUsageX = mergeUsageSum(
+                      totalUsageX,
+                      sseToChatCompletion(finalSseX, targetModel).usage
+                    );
+                  } else {
+                    failedX = true;
+                  }
+                } catch (e) {
+                  if (e?.name !== "AbortError" && !clientGone) {
+                    console.warn(`收尾 follow-up 失败：${e?.message || e}`);
+                  }
+                  failedX = true;
+                }
+              }
+            }
+            if (failedX || finalSseX === null) {
+              // follow-up 失败：不把未执行的 tool_call 漏给下游，
+              // 下游格式报错收尾
+              console.warn("搜索 follow-up 失败，已终止本次请求");
+              if (isAnthropic) {
+                res.write(
+                  `data: ${JSON.stringify({
+                    type: "error",
+                    error: { type: "api_error", message: "上游 follow-up 失败" },
+                  })}\n\n`
+                );
+              } else {
+                res.write(
+                  `data: ${JSON.stringify({
+                    type: "response.failed",
+                    response: {
+                      status: "failed",
+                      error: { message: "上游 follow-up 失败" },
+                    },
+                  })}\n\n`
+                );
+              }
+            } else {
+              const finalUpX = new Response(finalSseX, {
+                headers: { "content-type": "text/event-stream" },
+              });
+              if (isAnthropic) {
+                await streamChatToAnthropic(
+                  finalUpX,
+                  (c) => res.write(c),
+                  targetModel,
+                  timing
+                );
+              } else {
+                await streamChatToResponses(
+                  finalUpX,
+                  (c) => res.write(c),
+                  targetModel,
+                  timing
+                );
+              }
+              // totalUsageX 已含全部轮次（含末轮，循环内每轮都合并；5 轮上限的
+              // 收尾轮也在上面补入了）。翻译器刚又把末轮 usage 写进 timing.usage，
+              // 再 merge 会把末轮算两遍——直接取用 totalUsageX。
+              timing.usage = totalUsageX;
+            }
           }
           zenLog({
             seq,
@@ -4376,11 +4549,145 @@ const server = http.createServer((req, res) => {
           return res.end();
         } else {
           // 非流式：攒 SSE → chat object → 转目标格式
-          const sseText = (await readUpstreamBody(upstream)).toString();
-          if (sseText.includes("FreeTierError")) {
-            console.error("上游报错：免费身份已过期。");
+          let chatObj = null;
+          if (interceptNamesX.size === 0) {
+            // 无搜索：v62 行为
+            const sseText = (await readUpstreamBody(upstream)).toString();
+            if (sseText.includes("FreeTierError")) {
+              console.error("上游报错：免费身份已过期。");
+            }
+            chatObj = sseToChatCompletion(sseText, targetModel);
+          } else {
+            // v63: 搜索开：chat 层 agentic loop（与直连 chat 非流式同款），
+            // 末轮 chat object 再转下游格式。proxy 工具调用被拦截本地执行，
+            // 下游只看到最终结果，绝不漏出 proxy tool_call。
+            let currentMessagesY = Array.isArray(chatBody.messages)
+              ? chatBody.messages
+              : [];
+            let totalUsageY = null;
+            for (let roundY = 0; roundY < 5; roundY++) {
+              let sseTextY;
+              if (roundY === 0) {
+                sseTextY = (await readUpstreamBody(upstream)).toString();
+                if (sseTextY.includes("FreeTierError")) {
+                  console.error("上游报错：免费身份已过期。");
+                }
+              } else {
+                const upY = await fetch(UPSTREAM + upstreamPath, {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    ...chatBody,
+                    messages: currentMessagesY,
+                  }),
+                  duplex: "half",
+                  signal: AbortSignal.any([
+                    ac.signal,
+                    AbortSignal.timeout(300000),
+                  ]),
+                });
+                if (!upY.ok) break;
+                sseTextY = (await readUpstreamBody(upY)).toString();
+              }
+              chatObj = sseToChatCompletion(sseTextY, targetModel);
+              totalUsageY = mergeUsageSum(totalUsageY, chatObj.usage);
+              const proxyCallsY = (
+                chatObj.choices?.[0]?.message?.tool_calls || []
+              ).filter(
+                (tc) =>
+                  tc?.function &&
+                  interceptNamesX.has(
+                    unprefixToolName(tc.function.name, knownX)
+                  )
+              );
+              if (proxyCallsY.length === 0) break;
+              const callsY = [];
+              const outputsY = [];
+              for (const pc of proxyCallsY) {
+                const nm = unprefixToolName(pc.function.name, knownX);
+                const args =
+                  typeof pc.function.arguments === "string"
+                    ? pc.function.arguments
+                    : JSON.stringify(pc.function.arguments ?? {});
+                outputsY.push(
+                  await runProxyTool(nm, args, seq, ac.signal, forceSearch)
+                );
+                callsY.push({
+                  id: pc.id || `call_proxy_${++proxyCallSeq}`,
+                  name: nm,
+                  arguments: args,
+                });
+              }
+              currentMessagesY = [
+                ...currentMessagesY,
+                {
+                  role: "assistant",
+                  tool_calls: callsY.map((c) => ({
+                    id: c.id,
+                    type: "function",
+                    function: { name: c.name, arguments: c.arguments },
+                  })),
+                },
+                ...callsY.map((c, i) => ({
+                  role: "tool",
+                  tool_call_id: c.id,
+                  content: outputsY[i] ?? "",
+                })),
+              ];
+              if (roundY === 4) {
+                console.warn(
+                  "内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾"
+                );
+                try {
+                  const finalY = await fetch(UPSTREAM + upstreamPath, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({
+                      ...chatBody,
+                      messages: currentMessagesY,
+                    }),
+                    duplex: "half",
+                    signal: AbortSignal.any([
+                      ac.signal,
+                      AbortSignal.timeout(300000),
+                    ]),
+                  });
+                  if (finalY.ok) {
+                    const finalTextY = (
+                      await readUpstreamBody(finalY)
+                    ).toString();
+                    chatObj = sseToChatCompletion(finalTextY, targetModel);
+                    totalUsageY = mergeUsageSum(totalUsageY, chatObj.usage);
+                  }
+                } catch (e) {
+                  if (e?.name !== "AbortError" && !clientGone) {
+                    console.warn(`收尾 follow-up 失败：${e?.message || e}`);
+                  }
+                }
+              }
+            }
+            if (totalUsageY) chatObj.usage = totalUsageY;
+            // 兜底：follow-up 失败等极端情况下 chatObj 可能残留未执行的
+            // proxy tool_call，绝不能漏给下游——剥掉，只保留客户端工具。
+            const _msgY = chatObj?.choices?.[0]?.message;
+            if (_msgY && Array.isArray(_msgY.tool_calls)) {
+              const _keptY = _msgY.tool_calls.filter(
+                (tc) =>
+                  !interceptNamesX.has(
+                    unprefixToolName(tc?.function?.name || "", knownX)
+                  )
+              );
+              if (_keptY.length !== _msgY.tool_calls.length) {
+                console.warn("收尾时剥离未执行的 proxy tool_call（防漏给下游）");
+                _msgY.tool_calls = _keptY;
+                if (_keptY.length === 0) delete _msgY.tool_calls;
+              }
+            }
           }
-          const chatObj = sseToChatCompletion(sseText, targetModel);
+          // v63-fix（实锤 bug：#33 日志 ?tok/s）：非流式翻译路径的 usage 来自
+          // chatObj（SSE 聚合），timing.usage 在此分支从未被赋值，zenLog 传
+          // timing.usage 导致日志永远显示问号。补上，与客户端 usage 同源。
+          timing.usage = chatObj?.usage ?? null;
           if (isAnthropic) {
             // chat → Anthropic
             const content = [];

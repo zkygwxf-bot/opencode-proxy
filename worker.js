@@ -8,7 +8,7 @@
 //   - Translates: chat/completions <-> Responses API, Anthropic /v1/messages
 //
 // RikkaHub: URL https://<your-worker>.workers.dev/v1 , Key: anything,
-// Model: muse-spark-1.3-contributor-free
+// Model: muse-spark-1.2-contributor-free
 //
 // NOTE: the free tier is rate-limited per egress IP, and Workers egress IPs
 // are shared. If you hit FreeTierError/429 here, the phone (Termux) build
