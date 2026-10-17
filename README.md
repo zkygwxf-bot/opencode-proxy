@@ -17,18 +17,18 @@
 
 ## 安装
 
-v66
+v67
 
 老用户更新命令（登录凭证保存在安装目录之外，更新不会被冲掉）：
 
 ```
-rm -rf ~/opencode-proxy ~/v65.zip ~/v64.zip && rm -f $PREFIX/bin/ai && curl -sL -o ~/v66.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v66/opencode-proxy-phone-v66.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v66.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+rm -rf ~/opencode-proxy ~/v66.zip ~/v65.zip && rm -f $PREFIX/bin/ai && curl -sL -o ~/v67.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v67/opencode-proxy-phone-v67.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v67.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 新用户安装命令：
 
 ```
-curl -sL -o ~/v66.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v66/opencode-proxy-phone-v66.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v66.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+curl -sL -o ~/v67.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v67/opencode-proxy-phone-v67.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v67.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 ## 使用
