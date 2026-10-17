@@ -113,16 +113,20 @@ const ALL_PROXY_TOOLS_CHAT = ALL_PROXY_TOOLS_RESPONSES.map((t) => ({
   },
 }));
 
-// 可用模型白名单（2026-10-10 真机实测可用）
-// exo-free 已下线；jev/ling/nemotron-3.5 实测 400/403，已剔除
+// 可用模型白名单（2026-10-17 与 proxy.mjs FREE_MODEL_IDS 对齐；
+// 注意：本 worker 是 Cloudflare 部署形态，与 Termux 版 proxy.mjs 不是同一实现，
+// 仅名单保持一致，翻译器细节以 proxy.mjs 为准）
 const WORKING_FREE_MODELS = new Set([
-  "muse-spark-1.3-contributor-free",
   "muse-spark-1.2-contributor-free",
   "mimo-v2.6-flash-free",
   "longcat-2.5-preview-free",
-  "step-5-preview-free",
   "space-bunny-free",
-  "nemotron-3-ultra-free",
+  "big-pickle",
+  "nemotron-3.5-lightning-free",
+  "nemotron-3.5-super-vl-free",
+  "deepseek-v4.1-flash-free",
+  "glm-5.3-flash-free",
+  "beam-free",
 ]);
 
 const WEBFETCH_UA =

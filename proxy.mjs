@@ -37,7 +37,14 @@ import fs from "fs";
 import path from "path";
 import dns from "node:dns";
 
-const PORT = Number(process.env.PORT || 8788);
+const PORT_RAW = process.env.PORT || "8788";
+const PORT = Number(PORT_RAW);
+// v62：PORT 非法（如 PORT=abc）时 listen 会抛未捕获的 ERR_SOCKET_BAD_PORT
+// 堆栈刷屏；提前给一句中文说明再退出。
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  console.error(`PORT 非法（${JSON.stringify(String(PORT_RAW)).slice(0, 40)}）：请设为 1-65535 的数字，或不设（默认 8788）`);
+  process.exit(1);
+}
 const UPSTREAM = "https://opencode.ai";
 const DIR = import.meta.dirname;
 
@@ -149,8 +156,8 @@ function zenStartLog(seq, model, msgCount, clientTag = "") {
   );
 }
 // 后台请求失败才单独打一行（成功的只计数）；不碰 bgOkCount，避免汇总里重复出现
-function zenBgFail(seq) {
-  console.log(`后台#${seq} ✕ 失败`);
+function zenBgFail(seq, detail = "") {
+  console.log(`后台#${seq} ✕ 失败${detail ? `：${detail}` : ""}`);
 }
 
 // 工具定义文件缺失/损坏时给中文提示再退出，不要英文堆栈直接崩
@@ -3346,14 +3353,17 @@ const server = http.createServer((req, res) => {
         } catch {}
       }
     });
+    // v62：响应正常完成时打标。之前 responseDone 声明了但从未赋值，
+    // catch 里"已完成的不算断开"这个判断永远走不到。
+    res.on("finish", () => {
+      responseDone = true;
+    });
     try {
       const raw = Buffer.concat(chunks);
       const url = new URL(req.url, "http://localhost");
 
       // v38/v45: /r 前缀专供 Response API 模式（RikkaHub 里填 http://127.0.0.1:8788/r/v1）。
-      // v45: 模型列表统一返回 8 个（含 -search 变体），所有接口都认后缀。
-      // /r 仅做路径兼容（剥掉前缀），不再区分模型列表。
-      let hideSearchVariants = false;
+      // /r 仅做路径兼容（剥掉前缀），模型列表与普通路径一致。
       if (url.pathname === "/r" || url.pathname.startsWith("/r/")) {
         url.pathname =
           url.pathname === "/r" ? "/" : url.pathname.slice(2);
@@ -3845,14 +3855,15 @@ const server = http.createServer((req, res) => {
         );
       }
 
-      // /v1/models：只保留实测可用的 4 个免费模型，再给每个加 -search 后缀变体，
+      // /v1/models：只保留实测可用的免费模型，再给每个加 -search 后缀变体，
       // 注意：必须在下面的非 SSE 透传之前处理——模型列表是 JSON，上面的透传会提前 return，
       // 放后面就成了死代码（v31 的 bug：过滤从未生效）。
       // RikkaHub 模型列表里可选，选了带后缀的即启用 websearch/webfetch（模型名开关）
-      // 可用列表（2026-10-06 用户真机实测）：spark-1.3/1.2、mimo-v2.6-flash、longcat-2.5-preview
-      // 名单复用模块级 FREE_MODEL_IDS
+      // 名单复用模块级 FREE_MODEL_IDS。
+      // v62：上游名单可能漏掉可调用的模型（如 muse-spark-1.2-contributor-free 走
+      // Responses 通道，上游 /zen/v1/models 不列出），过滤后把白名单里缺的补上，
+      // 名单口径以"可调用"为准。
       // v35：上游失败/解析失败时返回内置兜底名单，保证任何接口模式下总能拉到模型
-      // v38：/r 前缀（Response API 专用）下不加 -search 变体，只返回 4 个基础模型
       if (upstreamPath === "/zen/v1/models") {
         if (upstream.ok) {
           const modelsText = await upstream.text();
@@ -3863,22 +3874,32 @@ const server = http.createServer((req, res) => {
               modelsData.data = modelsData.data.filter(
                 (m) => typeof m?.id === "string" && FREE_MODEL_IDS.has(m.id)
               );
+              // 补上白名单里有、上游没列的可调用模型（去重）
+              const seenIds = new Set(
+                modelsData.data.map((m) => m?.id).filter(Boolean)
+              );
+              for (const id of FREE_MODEL_IDS) {
+                if (!seenIds.has(id)) {
+                  modelsData.data.push({
+                    id,
+                    object: "model",
+                    created: 0,
+                    owned_by: "opencode",
+                  });
+                  seenIds.add(id);
+                }
+              }
               // 空列表也视为上游异常：走下面的内置兜底，保证客户端总能拉到模型（v35 本意）
               if (modelsData.data.length === 0) throw new Error("upstream empty model list");
-              if (!hideSearchVariants) {
-                const extra = [];
-                for (const m of modelsData.data) {
-                  const id = m?.id;
-                  if (!id.endsWith("-search")) {
-                    extra.push({ ...m, id: id + "-search" });
-                  }
+              const extra = [];
+              for (const m of modelsData.data) {
+                const id = m?.id;
+                if (!id.endsWith("-search")) {
+                  extra.push({ ...m, id: id + "-search" });
                 }
-                modelsData.data.push(...extra);
               }
-              console.log(
-                `模型列表 ✓ ${modelsData.data.length}个` +
-                  (hideSearchVariants ? "（精简版，无搜索变体）" : "（含搜索变体）")
-              );
+              modelsData.data.push(...extra);
+              console.log(`模型列表 ✓ ${modelsData.data.length}个（含搜索变体）`);
               return sendJson(res, upstream.status, modelsData);
             }
           } catch {
@@ -3886,10 +3907,9 @@ const server = http.createServer((req, res) => {
           }
         }
         console.warn(
-          `模型列表上游异常（status=${upstream.status}），返回内置兜底` +
-            (hideSearchVariants ? "（精简版）" : "（8 模型）")
+          `模型列表上游异常（status=${upstream.status}），返回内置兜底`
         );
-        return sendJson(res, 200, buildFallbackModels(hideSearchVariants));
+        return sendJson(res, 200, buildFallbackModels(false));
       }
 
       // Peek non-streaming responses (e.g. /v1/models JSON, or a JSON error
@@ -4891,9 +4911,10 @@ const server = http.createServer((req, res) => {
         return;
       }
       const isTimeout = e?.name === "TimeoutError";
-      // 后台请求失败：单独一行，不刷屏
+      // 后台请求失败：单独一行，不刷屏。带上错误原因，否则非流式内部异常
+      // 只留"失败"两个字，排障时完全看不出断在哪（v62）。
       if (!clientWantsStream) {
-        zenBgFail(seq);
+        zenBgFail(seq, e?.message || String(e));
         if (!res.headersSent)
           return sendErrorJson(res, 502, "上游连接失败，稍后重试");
         try { res.end(); } catch {}

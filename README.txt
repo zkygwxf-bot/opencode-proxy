@@ -1,7 +1,14 @@
-OpenCode 免费模型反代 - 手机版 (v34)
+OpenCode 免费模型反代 - 手机版 (v62)
 ==============================================
 
-v34 更新内容（思考参数全接口适配）：
+v62 更新内容（名单与排障）：
+- /v1/models 补上可调用的 muse-spark-1.2-contributor-free（它走 Responses 通道，
+  上游名单不列出；名单口径以"可调用"为准）
+- 非流式请求内部异常时日志带上错误原因（之前只打"失败"两字，无法排障）
+- 删掉已回退的代理池说明（功能不存在，文档先行是错的）
+- PORT 非法时给中文提示再退出（之前是未捕获堆栈）
+
+v61 更新内容（OpenCode 2.0.32 对齐 + ai 持久化 + 名单更新）：
 - 修兼容 OpenAI 模式 400：chat 路径的顶层 reasoning_effort 在翻译时
   转成 reasoning: {effort, summary:'auto'} 形状（上游不认顶层参数）
 - responses 直连/翻译统一形状；'none' 直接删掉；没要摘要自动补
@@ -44,18 +51,11 @@ v31 更新内容（酒馆插件直连支持）：
 - 加 CORS 头：酒馆插件关掉"通过酒馆渠道发送"后可直连本反代
   （之前直连会报 Failed to fetch，就是缺这个）
 
-启动方法 (Termux)：
+启动方法 (Termux):
   输入 ai 即可启动（安装命令已把 ai 软链进 $PREFIX/bin，关掉 Termux 重开依然有效）
   或 cd 到解压目录后 node proxy.mjs
 
-出站代理池（可选，默认关闭）：
-  Zen 免费层按出口 IP 限流；如需多出口分摊，两种方式二选一：
-  1) 环境变量：export OPENCODE_PROXIES="http://u:p@host:port,socks5://host:1080"
-  2) 在 proxy.mjs 同目录建 proxies.txt，每行一个代理地址（# 开头为注释）
-  支持 http/https/socks5 代理；轮询使用，坏节点自动冷却剔除、恢复后自动启用；
-  proxies.txt 改动自动热加载；全灭时自动回退直连。不配则行为与旧版完全一致。
-
-RikkaHub 配置：
+RikkaHub 配置:
   URL: http://127.0.0.1:8788/v1
   Key: 随便填 (如 123)
   模型: deepseek-v4.1-flash-free（免费模型见 /v1/models 列表）
