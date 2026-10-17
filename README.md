@@ -17,18 +17,18 @@
 
 ## 安装
 
-v63
+v64
 
-老用户更新命令：
+老用户更新命令（先备份登录凭证再重装，装完自动恢复）：
 
 ```
-rm -rf ~/opencode-proxy && curl -sL -o ~/v63.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v63/opencode-proxy-phone-v63.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v63.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+cp ~/opencode-proxy/session.json ~/session.json.bak 2>/dev/null; rm -rf ~/opencode-proxy ~/v63.zip && rm -f $PREFIX/bin/ai && curl -sL -o ~/v64.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v64/opencode-proxy-phone-v64.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v64.zip -d ~/opencode-proxy && cp ~/session.json.bak ~/opencode-proxy/session.json 2>/dev/null; rm -f ~/session.json.bak && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 新用户安装命令：
 
 ```
-curl -sL -o ~/v63.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v63/opencode-proxy-phone-v63.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v63.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+curl -sL -o ~/v64.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v64/opencode-proxy-phone-v64.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v64.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 ## 使用
