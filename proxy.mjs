@@ -308,25 +308,30 @@ for (const t of [...PROXY_TOOLS_RESPONSES, ...PROXY_TOOLS_CHAT]) Object.freeze(t
 Object.freeze(PROXY_TOOLS_RESPONSES);
 Object.freeze(PROXY_TOOLS_CHAT);
 
-// 免费模式硬白名单：真机实测可用的 4 个免费模型。
-// 用于 /v1/models 列表过滤（只展示这 4 个 + 各自的 -search 变体）。
+// 免费模式硬白名单：真机实测可用的免费模型（2026-10-17 逐个 chat 实测 200 且有真回复）。
+// 用于 /v1/models 列表过滤（只展示这些 + 各自的 -search 变体）。
 // 设置了 OPENCODE_API_KEY（付费模式）可走付费 Zen 模型，不受此限。
 const FREE_MODEL_IDS = new Set([
-  "muse-spark-1.3-contributor-free",
   "muse-spark-1.2-contributor-free",
   "mimo-v2.6-flash-free",
   "longcat-2.5-preview-free",
-  "step-5-preview-free",
   "space-bunny-free",
-  "nemotron-3-ultra-free",
+  "big-pickle",
+  "nemotron-3.5-lightning-free",
+  "nemotron-3.5-super-vl-free",
+  "deepseek-v4.1-flash-free",
+  "glm-5.3-flash-free",
+  "beam-free",
 ]);
-// 注：exo-free 已下线(410)；jev-1.13-free、ling-3.0/3.1-flash-fin-free、
-// nemotron-3.5-lightning-free 实测 400/403 不可用，已剔除（2026-10-10）
+// 注：muse-spark-1.3-contributor-free 已被上游下线(410 ModelDeprecated)；
+// nemotron-3-ultra-free 上游返回空内容（已从上游免费名单移除）；
+// step-5-preview-free 上游 400 Model is unavailable；
+// jev-1.13-free 上游 400 Model does not support this protocol —— 均已剔除（2026-10-17）
 
 // 内置模型列表兜底：上游 /zen/v1/models 失败或返回异常时用，保证客户端
 // （RikkaHub/酒馆插件等）在任何接口模式下总能拉到模型。
 // OpenAI 标准形状 {object:"list", data:[{id, object:"model", ...}]}。
-// hideSearch：true 时只返回 4 个基础模型（/r 前缀 Response API 专用）。
+// hideSearch：true 时只返回基础模型（/r 前缀 Response API 专用）。
 function buildFallbackModels(hideSearch = false) {
   const data = [];
   for (const id of FREE_MODEL_IDS) {
