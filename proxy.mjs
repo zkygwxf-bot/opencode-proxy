@@ -48,6 +48,37 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 const UPSTREAM = "https://opencode.ai";
 const DIR = import.meta.dirname;
 
+// ---------- 身份文件存放（v64） ----------
+// 教训（v63 事件，2026-10-17）：升级命令是 `rm -rf ~/opencode-proxy` 整目录删掉，
+// session.json 曾跟安装目录一起被冲掉、换成包里那份别人的旧身份。
+// v64 起 session.json 搬到安装目录之外：~/.config/opencode-proxy/session.json
+// （跟 key 文件同目录）。读取优先级：外部 > 安装目录内置（兼容旧包）；
+// 自动学习/抓取的写入一律落外部。升级再 `rm -rf` 也冲不掉身份。
+const SESSION_STORE_DIR =
+  (process.env.HOME || "~") + "/.config/opencode-proxy";
+const SESSION_EXTERNAL = path.join(SESSION_STORE_DIR, "session.json");
+const SESSION_BUNDLED = path.join(DIR, "session.json");
+// 首次启动迁移：外部没有但安装目录里有（旧升级留下的或包里带的），
+// 复制一份到外部，以后就只用外部的。
+function migrateSessionIfNeeded() {
+  try {
+    fs.accessSync(SESSION_EXTERNAL);
+    return; // 外部已有，不动
+  } catch {}
+  let raw;
+  try {
+    raw = fs.readFileSync(SESSION_BUNDLED, "utf8");
+  } catch {
+    return; // 内置也没有，没什么可迁的
+  }
+  try {
+    fs.mkdirSync(SESSION_STORE_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(SESSION_EXTERNAL, raw, { mode: 0o600 });
+    console.log(`身份已迁到安装目录外：${SESSION_EXTERNAL}（以后升级不会被冲掉）`);
+  } catch {}
+}
+migrateSessionIfNeeded();
+
 // ---------- 中文日志 ----------
 // 科技面板风，两行式（开始行 + 结果行，靠 #N 配对，并发下也不乱）：
 // #14 · 11:20:20 · 127.0.0.1(RikkaHub) · muse-spark-1.3-contributor-free · 3条消息
@@ -376,7 +407,8 @@ function getApiKey() {
 
 // sessionStatus 区分三种状态：ok / missing / corrupt，供错误文案和 /health 用
 function sessionStatus() {
-  const p = path.join(DIR, "session.json");
+  // v64：优先读安装目录外的身份（升级冲不掉），没有才读安装目录内置的
+  const p = fs.existsSync(SESSION_EXTERNAL) ? SESSION_EXTERNAL : SESSION_BUNDLED;
   let raw;
   try {
     raw = fs.readFileSync(p, "utf8");
@@ -1350,6 +1382,215 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
   }
   finalizeUndecided();
   return { intercepted };
+}
+
+// v64: 翻译路径（translateToChat）搜索流式的增量翻译会话。
+// 做法移植自 OpenCode 2.0.32 官方（packages/core/src/session/runner/step.ts +
+// publish-llm-event.ts）：每轮一个上游流逐事件消费，text-delta 到达即下发；
+// 内置工具调用一收齐就扣住"完成类"事件、本地执行后下一轮继续，同一条下游
+// response/message 保持打开（按源顺序追加、不要求跨轮全局重排）。
+// 与官方的差异：官方工具并发执行，咱们顺序执行（v60+ 既有语义，简单确定）；
+// 官方发布全部工具事件，咱们吞掉内置工具调用（对客户端透明的产品语义）。
+// 事件形状与 streamChatToResponses / streamChatToAnthropic 逐字段一致。
+// 用法：每轮把 streamChatDirectWithIntercept 的 emit 接到 sess.pushChatChunk，
+// 轮末调 sess.endRound(wasIntercepted)，全部轮次结束后调 sess.finish(usage)。
+function makeXlateSessionX(isAnthropic, model, timing, emitRaw) {
+  const emit = (obj) => {
+    try {
+      emitRaw(`data: ${JSON.stringify(obj)}\n\n`);
+    } catch {}
+  };
+  const respId = `resp-proxy-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const msgId = isAnthropic ? `msg_proxy_${Date.now()}` : `msg_${respId}`;
+  const textParts = []; // 跨轮累计正文（末轮 done 事件用全量）
+  const roundTools = new Map(); // 本轮缓冲的客户端工具：index -> {id,name,args}
+  const emittedTools = []; // 已下发的客户端工具（跨轮，用于收尾 output/stop_reason）
+  let toolBlockIndex = 1; // anthropic：工具 block 序号（0 是正文）
+  let outIndex = 1; // responses：工具 item 序号（0 是正文 message）
+  let headSent = false;
+  let textItemOpen = false; // responses：正文 message item 懒创建（与旧翻译器一致）
+  let lastFinishReason = null;
+  let failed = false;
+
+  const head = () => {
+    if (headSent) return;
+    headSent = true;
+    if (isAnthropic) {
+      emit({
+        type: "message_start",
+        message: {
+          id: msgId, type: "message", role: "assistant", model,
+          content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      });
+      // anthropic 旧翻译器：正文 block 立即打开
+      emit({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      textItemOpen = true;
+    } else {
+      emit({
+        type: "response.created",
+        response: { id: respId, object: "response", created, model, status: "in_progress", output: [] },
+      });
+    }
+  };
+  // responses 正文 item 懒创建（旧翻译器：有正文才建 item）
+  const ensureTextItem = () => {
+    if (isAnthropic || textItemOpen) return;
+    textItemOpen = true;
+    emit({
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { type: "message", id: msgId, role: "assistant", content: [] },
+    });
+    emit({
+      type: "response.content_part.added",
+      item_id: msgId, output_index: 0, content_index: 0,
+      part: { type: "output_text", text: "", annotations: [] },
+    });
+  };
+
+  const pushChatChunk = (raw) => {
+    // 来自 streamChatDirectWithIntercept 的 emit：`data: <payload>\n\n`
+    const t = String(raw || "").trim();
+    if (!t.startsWith("data:")) return;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    let obj;
+    try {
+      obj = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    const choice = obj.choices?.[0];
+    if (!choice) {
+      // usage chunk：解析器已记入 timing.usage，这里吞掉（用量只在收尾事件下发）
+      return;
+    }
+    const delta = choice.delta || {};
+    if (typeof delta.content === "string" && delta.content) {
+      head();
+      ensureTextItem();
+      textParts.push(delta.content);
+      if (timing && !timing.firstTokenAt) timing.firstTokenAt = Date.now();
+      if (isAnthropic) {
+        emit({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: delta.content } });
+      } else {
+        emit({ type: "response.output_text.delta", item_id: msgId, output_index: 0, content_index: 0, delta: delta.content });
+      }
+    }
+    // reasoning 增量：旧翻译器只在 responses 侧透出
+    if (!isAnthropic && typeof delta.reasoning_content === "string" && delta.reasoning_content) {
+      head();
+      emit({ type: "response.reasoning_summary_text.delta", item_id: msgId, output_index: 0, summary_index: 0, delta: delta.reasoning_content });
+    }
+    // 工具调用增量：能到这里的都是解析器判定为"客户端"的（内置的已被吞掉）。
+    // 按轮缓冲，轮末统一翻译下发（保证 name 完整，见 v47.2 教训）。
+    if (Array.isArray(delta.tool_calls)) {
+      head();
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index ?? 0;
+        let e = roundTools.get(idx);
+        if (!e) {
+          e = { id: tc.id || (isAnthropic ? `toolu_${idx}` : `call_chat2resp_${idx}`), name: "", args: "" };
+          roundTools.set(idx, e);
+        }
+        if (typeof tc.function?.name === "string") e.name += tc.function.name;
+        if (typeof tc.function?.arguments === "string") e.args += tc.function.arguments;
+      }
+    }
+    if (choice.finish_reason) lastFinishReason = choice.finish_reason;
+  };
+
+  // 轮末：wasIntercepted=true → 本轮缓冲的客户端工具调用暂缓（与直连 chat
+  // 路径 loop B 同语义：内置工具优先，模型在 follow-up 中可重新调用）。
+  const endRound = (wasIntercepted) => {
+    if (wasIntercepted || failed) {
+      roundTools.clear();
+      return;
+    }
+    for (const [, e] of roundTools) {
+      if (isAnthropic) {
+        if (!e.name) continue; // 旧翻译器：无名 tool_call 跳过
+        const bi = toolBlockIndex++;
+        emit({ type: "content_block_start", index: bi, content_block: { type: "tool_use", id: e.id, name: e.name, input: {} } });
+        if (e.args) emit({ type: "content_block_delta", index: bi, delta: { type: "input_json_delta", partial_json: e.args } });
+        emit({ type: "content_block_stop", index: bi });
+        emittedTools.push({ id: e.id, name: e.name, args: e.args });
+      } else {
+        if (!e.name) {
+          // 旧翻译器：尽力转发而非静默丢弃
+          console.warn("chat→Responses 增量收尾：tool_call 缺 name，尽力转发");
+        }
+        const oi = outIndex++;
+        const item = { type: "function_call", id: e.id, call_id: e.id, name: e.name, arguments: e.args };
+        emit({ type: "response.output_item.added", output_index: oi, item });
+        emit({ type: "response.output_item.done", output_index: oi, item });
+        emittedTools.push({ id: e.id, name: e.name, arguments: e.args });
+      }
+    }
+    roundTools.clear();
+  };
+
+  const finish = (totalUsage) => {
+    const fullText = textParts.join("");
+    if (isAnthropic) {
+      const stopReason = emittedTools.length > 0 ? "tool_use"
+        : lastFinishReason === "length" ? "max_tokens"
+        : lastFinishReason === "content_filter" ? "content_filter"
+        : "end_turn";
+      const outUsage = {
+        input_tokens: totalUsage?.input_tokens ?? totalUsage?.prompt_tokens ?? 0,
+        output_tokens: totalUsage?.output_tokens ?? totalUsage?.completion_tokens ?? 0,
+      };
+      emit({ type: "content_block_stop", index: 0 });
+      emit({ type: "message_delta", delta: { stop_reason: stopReason }, usage: { input_tokens: outUsage.input_tokens, output_tokens: outUsage.output_tokens } });
+      emit({ type: "message_stop" });
+    } else {
+      if (textItemOpen) {
+        emit({ type: "response.output_text.done", item_id: msgId, output_index: 0, content_index: 0, text: fullText });
+        emit({ type: "response.content_part.done", item_id: msgId, output_index: 0, content_index: 0, part: { type: "output_text", text: fullText, annotations: [] } });
+        emit({
+          type: "response.output_item.done", output_index: 0,
+          item: { type: "message", id: msgId, role: "assistant", content: [{ type: "output_text", text: fullText, annotations: [] }] },
+        });
+      }
+      const output = [];
+      if (textItemOpen) {
+        output.push({ type: "message", id: msgId, role: "assistant", content: [{ type: "output_text", text: fullText, annotations: [] }] });
+      }
+      for (const tc of emittedTools) {
+        output.push({ type: "function_call", id: tc.id, call_id: tc.id, name: tc.name, arguments: tc.arguments });
+      }
+      const respUsage = totalUsage ? {
+        input_tokens: totalUsage.prompt_tokens ?? totalUsage.input_tokens,
+        output_tokens: totalUsage.completion_tokens ?? totalUsage.output_tokens,
+        total_tokens: totalUsage.total_tokens,
+      } : null;
+      const incReason = lastFinishReason === "length" ? "max_output_tokens"
+        : lastFinishReason === "content_filter" ? "content_filter" : null;
+      emit({
+        type: incReason ? "response.incomplete" : "response.completed",
+        response: {
+          id: respId, object: "response", created, model,
+          status: incReason ? "incomplete" : "completed",
+          ...(incReason ? { incomplete_details: { reason: incReason } } : {}),
+          output, usage: respUsage,
+        },
+      });
+    }
+  };
+
+  const fail = (message) => {
+    failed = true;
+    if (isAnthropic) {
+      emit({ type: "error", error: { type: "api_error", message } });
+    } else {
+      emit({ type: "response.failed", response: { status: "failed", error: { message } } });
+    }
+  };
+
+  return { head, pushChatChunk, endRound, finish, fail };
 }
 
 // Incremental translator: Responses SSE -> Anthropic SSE. True streaming.
@@ -3391,7 +3632,11 @@ const server = http.createServer((req, res) => {
       /^ses_[0-9a-f]{12}[0-9a-zA-Z]{14}$/.test(String(incomingSid))
     ) {
       try {
-        const sessionPath = path.join(DIR, "session.json");
+        // v64：学到的身份写到安装目录外，升级 `rm -rf` 冲不掉
+        try {
+          fs.mkdirSync(SESSION_STORE_DIR, { recursive: true, mode: 0o700 });
+        } catch {}
+        const sessionPath = SESSION_EXTERNAL;
         const sessionTmp = sessionPath + ".tmp";
         // 先写临时文件再原子 rename：避免并发请求在写入中途读到半截文件
         fs.writeFileSync(
@@ -3807,7 +4052,9 @@ const server = http.createServer((req, res) => {
           ? body.messages.length
           : Array.isArray(body?.input)
             ? body.input.length
-            : "?";
+            : typeof body?.input === "string"
+              ? 1 // responses 字符串 input：记 1 条，不再打问号（v64 日志专项）
+              : "?";
         // forceSearch 时在模型名后标注 🔍，让用户一眼看出搜索已启用。
         // 用 origModel（剥离 -search 后缀之前的原始名），跟 RikkaHub 里选的一致。
         const _lm = origModel ?? body?.model;
@@ -4370,16 +4617,27 @@ const server = http.createServer((req, res) => {
               void r;
             }
           } else {
-            // v63: 搜索开：chat 层 agentic loop（与直连 chat 同款），
-            // 末轮 SSE 翻译成下游格式发出。proxy 工具调用被拦截本地执行，
-            // 下游只看到最终结果，绝不漏出 proxy tool_call。
+            // v64: 搜索开 + 流式：增量下发（做法移植自 OpenCode 2.0.32 官方
+            // packages/core/src/session/runner/step.ts + publish-llm-event.ts）。
+            // 每轮上游 chat SSE 边到边翻译成下游事件实时下发；内置工具调用一收齐
+            // 就扣住"完成类"事件，本地执行后下一轮继续，同一条下游
+            // response/message 保持打开。绝不漏出 proxy tool_call。
+            const xlateX = makeXlateSessionX(
+              isAnthropic,
+              targetModel,
+              timing,
+              (c) => {
+                if (!clientGone) res.write(c);
+              }
+            );
             let currentMessagesX = Array.isArray(chatBody.messages)
               ? chatBody.messages
               : [];
             let totalUsageX = null;
-            let finalSseX = null;
             let failedX = false;
-            for (let roundX = 0; roundX < 5; roundX++) {
+            let doneX = false;
+            for (let roundX = 0; roundX < 5 && !doneX; roundX++) {
+              if (clientGone) break;
               let upX = upstream;
               if (roundX > 0) {
                 upX = await fetch(UPSTREAM + upstreamPath, {
@@ -4401,25 +4659,37 @@ const server = http.createServer((req, res) => {
                   break;
                 }
               }
-              // tee：拦截判定的同时保留本轮完整 SSE 文本
-              const [sXa, sXb] = upX.body.tee();
-              const rX = await streamChatDirectWithIntercept(
-                new Response(sXa, {
-                  headers: { "content-type": "text/event-stream" },
-                }),
-                () => {},
-                targetModel,
-                timing,
-                interceptNamesX,
-                knownX
-              );
-              totalUsageX = mergeUsageSum(totalUsageX, timing.usage);
-              timing.usage = null;
-              const thisSseX = await new Response(sXb).text();
-              if (rX.intercepted.length === 0) {
-                finalSseX = thisSseX;
+              // 单轮解析 + 拦截判定：正文增量经 xlateX 实时翻译下发，
+              // 内置工具调用被吞掉（不转发），客户端工具增量按轮缓冲。
+              let rX;
+              try {
+                rX = await streamChatDirectWithIntercept(
+                  upX,
+                  (chunk) => xlateX.pushChatChunk(chunk),
+                  targetModel,
+                  timing,
+                  interceptNamesX,
+                  knownX
+                );
+              } catch (e) {
+                // 上游中途断流：下游格式报错收尾，不 hang
+                if (e?.name !== "AbortError" || !clientGone) {
+                  console.warn(`搜索流式上游中断：${e?.message || e}`);
+                }
+                failedX = true;
                 break;
               }
+              totalUsageX = mergeUsageSum(totalUsageX, timing.usage);
+              timing.usage = null;
+              if (rX.intercepted.length === 0) {
+                // 本轮无拦截：下发本轮缓冲的客户端工具，收尾
+                xlateX.endRound(false);
+                doneX = true;
+                break;
+              }
+              // 本轮有拦截：客户端工具暂缓（直连 chat 路径同语义），
+              // 完成类事件继续扣住，本地执行内置工具后下一轮。
+              xlateX.endRound(true);
               const outputsX = [];
               for (const call of rX.intercepted) {
                 outputsX.push(
@@ -4432,6 +4702,7 @@ const server = http.createServer((req, res) => {
                   )
                 );
               }
+              if (clientGone) break;
               const callsX = rX.intercepted.map((c) => ({
                 id: c.call_id || `call_proxy_${++proxyCallSeq}`,
                 name: c.name,
@@ -4455,7 +4726,9 @@ const server = http.createServer((req, res) => {
                 })),
               ];
               if (roundX === 4) {
-                // 5 轮上限：最后一轮 follow-up 不再拦截，直接收尾
+                // 5 轮上限：最后一轮 follow-up 不再执行拦截到的调用
+                // （drop，只下发正文——v63 在此处会把 proxy tool_call
+                // 漏给下游，本轮起修复），直接收尾。
                 console.warn(
                   "内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾"
                 );
@@ -4474,13 +4747,22 @@ const server = http.createServer((req, res) => {
                     ]),
                   });
                   if (finalX.ok) {
-                    finalSseX = (await readUpstreamBody(finalX)).toString();
-                    // 收尾轮没走拦截循环，它的 usage 在此补入 totalUsageX，
-                    // 否则末轮 token 会被漏记。
-                    totalUsageX = mergeUsageSum(
-                      totalUsageX,
-                      sseToChatCompletion(finalSseX, targetModel).usage
+                    const rF = await streamChatDirectWithIntercept(
+                      finalX,
+                      (chunk) => xlateX.pushChatChunk(chunk),
+                      targetModel,
+                      timing,
+                      interceptNamesX,
+                      knownX
                     );
+                    totalUsageX = mergeUsageSum(totalUsageX, timing.usage);
+                    timing.usage = null;
+                    if (rF.intercepted.length > 0) {
+                      console.warn(
+                        "5 轮上限收尾轮仍有内置工具调用，已丢弃（不再执行）"
+                      );
+                    }
+                    xlateX.endRound(true);
                   } else {
                     failedX = true;
                   }
@@ -4490,52 +4772,18 @@ const server = http.createServer((req, res) => {
                   }
                   failedX = true;
                 }
+                doneX = true;
               }
             }
-            if (failedX || finalSseX === null) {
-              // follow-up 失败：不把未执行的 tool_call 漏给下游，
-              // 下游格式报错收尾
+            if (failedX) {
+              // 上游失败/中断：下游格式报错收尾（流式中已下发 created 等事件，
+              // response.failed / {"type":"error"} 在其后依然合法）
               console.warn("搜索 follow-up 失败，已终止本次请求");
-              if (isAnthropic) {
-                res.write(
-                  `data: ${JSON.stringify({
-                    type: "error",
-                    error: { type: "api_error", message: "上游 follow-up 失败" },
-                  })}\n\n`
-                );
-              } else {
-                res.write(
-                  `data: ${JSON.stringify({
-                    type: "response.failed",
-                    response: {
-                      status: "failed",
-                      error: { message: "上游 follow-up 失败" },
-                    },
-                  })}\n\n`
-                );
-              }
+              xlateX.fail("上游 follow-up 失败");
             } else {
-              const finalUpX = new Response(finalSseX, {
-                headers: { "content-type": "text/event-stream" },
-              });
-              if (isAnthropic) {
-                await streamChatToAnthropic(
-                  finalUpX,
-                  (c) => res.write(c),
-                  targetModel,
-                  timing
-                );
-              } else {
-                await streamChatToResponses(
-                  finalUpX,
-                  (c) => res.write(c),
-                  targetModel,
-                  timing
-                );
-              }
-              // totalUsageX 已含全部轮次（含末轮，循环内每轮都合并；5 轮上限的
-              // 收尾轮也在上面补入了）。翻译器刚又把末轮 usage 写进 timing.usage，
-              // 再 merge 会把末轮算两遍——直接取用 totalUsageX。
+              xlateX.finish(totalUsageX);
+              // totalUsageX 已含全部轮次（循环内每轮合并；5 轮上限收尾轮也已补入）。
+              // 再 merge 会把末轮算两遍（BUG-3）——直接取用 totalUsageX。
               timing.usage = totalUsageX;
             }
           }
