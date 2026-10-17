@@ -36,10 +36,234 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 import dns from "node:dns";
+import net from "node:net";
+import tls from "node:tls";
+import https from "node:https";
+import { Readable } from "node:stream";
 
 const PORT = Number(process.env.PORT || 8788);
 const UPSTREAM = "https://opencode.ai";
 const DIR = import.meta.dirname;
+
+// ============ 出站代理池（v61，默认关闭） ============
+// 解决的问题：Zen 免费层按出口 IP 限流/风控。多出口可分摊配额、故障转移。
+// 配置（二选一，配了即开启；都不配则行为与原来逐字节一致）：
+//   环境变量 OPENCODE_PROXIES="http://u:p@host:port,socks5://host:1080"
+//   或 proxy.mjs 同目录下的 proxies.txt（每行一个，# 开头为注释）
+// 语义（对齐 opencode2api 的 anonymousPool）：轮询选择；网络错/401/403/429/5xx
+//   触发指数退避冷却；成功即清零；proxies.txt 改动自动热加载；全灭/配置错误
+//   自动回退直连并打日志，绝不让反代整体不可用。
+const POOL_COOLDOWN_BASE_MS = 60000; // 首次冷却 60s，指数退避上限 8 倍
+const POOL = { enabled: false, nodes: [], cursor: 0, fileMtime: 0 };
+
+function poolRedact(url) {
+  try { const u = new URL(url); if (u.password) u.password = "***"; return u.toString(); }
+  catch { return url; }
+}
+function poolParseEntry(raw) {
+  const s = (raw || "").trim();
+  if (!s) return null;
+  let u;
+  try { u = new URL(s); } catch { console.log(`[pool] 跳过格式错误的节点: ${s.slice(0, 40)}`); return null; }
+  const proto = u.protocol.toLowerCase();
+  if (!["http:", "https:", "socks5:", "socks5h:"].includes(proto)) {
+    console.log(`[pool] 跳过不支持的协议: ${poolRedact(s).slice(0, 40)}`);
+    return null;
+  }
+  if (!u.hostname) { console.log(`[pool] 跳过无主机的节点`); return null; }
+  return s;
+}
+// SOCKS5 握手（无认证 / 用户名密码），目标走域名方式
+function poolSocks5Tunnel(proxyUrl, destHost, destPort, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(proxyUrl);
+    const sock = net.connect({ host: u.hostname, port: parseInt(u.port) || 1080 });
+    const timer = setTimeout(() => { sock.destroy(); reject(new Error("socks5 连接超时")); }, timeoutMs);
+    let done = false;
+    const fail = (m) => { if (done) return; done = true; clearTimeout(timer); sock.destroy(); reject(new Error("socks5: " + m)); };
+    const ok = () => { if (done) return; done = true; clearTimeout(timer); sock.removeAllListeners(); resolve(sock); };
+    let stage = 0, buf = Buffer.alloc(0);
+    const sendReq = () => {
+      stage = 2;
+      const host = Buffer.from(destHost);
+      sock.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, host.length]), host,
+        Buffer.from([(destPort >> 8) & 0xff, destPort & 0xff])]));
+    };
+    sock.on("connect", () => {
+      const methods = (u.username || u.password) ? [0x00, 0x02] : [0x00];
+      sock.write(Buffer.from([0x05, methods.length, ...methods]));
+    });
+    sock.on("data", (c) => {
+      buf = Buffer.concat([buf, c]);
+      if (stage === 0) {
+        if (buf.length < 2) return;
+        if (buf[0] !== 0x05) return fail("协议版本错误");
+        if (buf[1] === 0x02) {
+          const user = Buffer.from(decodeURIComponent(u.username || "")), pass = Buffer.from(decodeURIComponent(u.password || ""));
+          buf = Buffer.alloc(0); stage = 1;
+          sock.write(Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]));
+        } else if (buf[1] === 0x00) { buf = Buffer.alloc(0); sendReq(); }
+        else return fail("服务器拒绝认证方式");
+      } else if (stage === 1) {
+        if (buf.length < 2) return;
+        if (buf[0] !== 0x01 || buf[1] !== 0x00) return fail("账密认证失败");
+        buf = Buffer.alloc(0); sendReq();
+      } else {
+        if (buf.length < 5) return;
+        const atyp = buf[3];
+        const need = atyp === 0x01 ? 10 : atyp === 0x04 ? 22 : atyp === 0x03 ? 7 + buf[4] : -1;
+        if (need < 0 || buf.length < need) return;
+        if (buf[1] !== 0x00) return fail("目标连接失败");
+        ok();
+      }
+    });
+    sock.on("error", (e) => fail(e.message));
+    sock.on("close", () => { if (!done) fail("连接被关闭"); });
+  });
+}
+// HTTP CONNECT 隧道（支持 Basic 认证）
+function poolHttpTunnel(proxyUrl, destHost, destPort, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(proxyUrl);
+    const sock = net.connect({ host: u.hostname, port: parseInt(u.port) || 80 });
+    const timer = setTimeout(() => { sock.destroy(); reject(new Error("http-proxy 连接超时")); }, timeoutMs);
+    let done = false;
+    const fail = (m) => { if (done) return; done = true; clearTimeout(timer); sock.destroy(); reject(new Error("http-proxy: " + m)); };
+    let buf = "";
+    sock.on("connect", () => {
+      let req = `CONNECT ${destHost}:${destPort} HTTP/1.1\r\nHost: ${destHost}:${destPort}\r\n`;
+      if (u.username) req += `Proxy-Authorization: Basic ${Buffer.from(decodeURIComponent(u.username) + ":" + decodeURIComponent(u.password || "")).toString("base64")}\r\n`;
+      sock.write(req + "\r\n");
+    });
+    sock.on("data", (c) => {
+      buf += c.toString("latin1");
+      const i = buf.indexOf("\r\n\r\n");
+      if (i < 0) return;
+      const code = parseInt(buf.split("\r\n")[0].split(" ")[1]);
+      if (code === 200) { if (!done) { done = true; clearTimeout(timer); sock.removeAllListeners(); resolve(sock); } }
+      else fail("代理拒绝 " + buf.split("\r\n")[0]);
+    });
+    sock.on("error", (e) => fail(e.message));
+    sock.on("close", () => { if (!done) fail("连接被关闭"); });
+  });
+}
+function poolMakeAgent(proxyUrl) {
+  const agent = new https.Agent({ keepAlive: false, maxSockets: 32 });
+  agent.createConnection = (opts, cb) => {
+    (async () => {
+      const u = new URL(proxyUrl);
+      const raw = u.protocol.toLowerCase().startsWith("socks")
+        ? await poolSocks5Tunnel(proxyUrl, opts.host, opts.port || 443)
+        : await poolHttpTunnel(proxyUrl, opts.host, opts.port || 443);
+      const s = tls.connect({ socket: raw, servername: opts.host, ALPNProtocols: ["http/1.1"] });
+      await new Promise((res, rej) => { s.once("secureConnect", res); s.once("error", rej); });
+      return s;
+    })().then((s) => cb(null, s), (e) => cb(e));
+  };
+  return agent;
+}
+// 经 agent 发请求，返回标准 Web Response（调用方用法与 fetch 一致）
+function poolFetchViaAgent(url, init, agent) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = https.request({
+      hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search,
+      method: init.method || "GET", headers: { ...(init.headers || {}) },
+      agent, signal: init.signal,
+    }, (res) => {
+      const h = new Headers();
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (v === undefined) continue;
+        Array.isArray(v) ? v.forEach((x) => h.append(k, x)) : h.set(k, v);
+      }
+      const noBody = res.statusCode === 204 || res.statusCode === 304;
+      resolve(new Response(noBody ? null : Readable.toWeb(res), { status: res.statusCode, headers: h }));
+    });
+    req.on("error", reject);
+    try { if (init.body != null) req.write(init.body); } catch (e) { req.destroy(e); return reject(e); }
+    req.end();
+  });
+}
+function poolLoad() {
+  const seen = new Set(), entries = [];
+  const push = (raw) => {
+    const clean = poolParseEntry(raw);
+    if (clean && !seen.has(clean)) { seen.add(clean); entries.push(clean); }
+  };
+  for (const part of (process.env.OPENCODE_PROXIES || "").split(/[\n,]/)) push(part);
+  try {
+    const p = path.join(DIR, "proxies.txt");
+    const st = fs.statSync(p);
+    POOL.fileMtime = st.mtimeMs;
+    for (const line of fs.readFileSync(p, "utf8").split("\n")) {
+      const t = line.trim();
+      if (t && !t.startsWith("#")) push(t);
+    }
+  } catch { /* 无文件即不配 */ }
+  const nodes = [];
+  for (const url of entries) {
+    try {
+      nodes.push({ url, name: poolRedact(url), agent: poolMakeAgent(url), failures: 0, cooldownUntil: 0 });
+    } catch (e) { console.log(`[pool] 节点初始化失败，已跳过: ${poolRedact(url)} (${e.message})`); }
+  }
+  POOL.nodes = nodes;
+  POOL.enabled = nodes.length > 0;
+  POOL.cursor = 0;
+  if (POOL.enabled) console.log(`[pool] 已启用，${nodes.length} 个出站节点: ${nodes.map((n) => n.name).join(", ")}`);
+  else console.log("[pool] 未配置（OPENCODE_PROXIES / proxies.txt 为空），走直连");
+}
+function poolMaybeReload() {
+  try {
+    const mtime = fs.statSync(path.join(DIR, "proxies.txt")).mtimeMs;
+    if (mtime !== POOL.fileMtime) { console.log("[pool] proxies.txt 有变动，热加载"); poolLoad(); }
+  } catch { /* 文件删了就保持现状，重启生效 */ }
+}
+function poolPick() {
+  if (!POOL.enabled) return null;
+  poolMaybeReload();
+  const now = Date.now(), n = POOL.nodes.length;
+  for (let i = 0; i < n; i++) {
+    const idx = (POOL.cursor + i) % n, node = POOL.nodes[idx];
+    if (node.cooldownUntil <= now) { POOL.cursor = (idx + 1) % n; return node; }
+  }
+  return null; // 全在冷却 → 调用方回退直连
+}
+function poolMark(node, ok, status) {
+  if (ok) {
+    if (node.failures) console.log(`[pool] 节点恢复: ${node.name}`);
+    node.failures = 0; node.cooldownUntil = 0;
+  } else {
+    node.failures++;
+    const delay = POOL_COOLDOWN_BASE_MS * Math.pow(2, Math.min(node.failures - 1, 3));
+    node.cooldownUntil = Date.now() + delay;
+    console.log(`[pool] 节点 ${node.name} 失败(${status})，冷却 ${Math.round(delay / 1000)}s`);
+  }
+}
+// 上游 fetch 统一入口：池关闭时就是原生 fetch；开启后走节点轮询，
+// 节点网络错自动换下一个，全灭回退直连。返回标准 Response。
+async function upstreamFetch(url, init = {}) {
+  if (!POOL.enabled) return fetch(url, init);
+  const tried = new Set();
+  for (;;) {
+    const node = poolPick();
+    if (!node || tried.has(node)) {
+      if (tried.size) console.log("[pool] 暂无可用节点，本次回退直连");
+      return fetch(url, init);
+    }
+    tried.add(node);
+    try {
+      const resp = await poolFetchViaAgent(url, init, node.agent);
+      const bad = resp.status === 401 || resp.status === 403 || resp.status === 429 || resp.status >= 500;
+      poolMark(node, !bad, resp.status);
+      return resp;
+    } catch (e) {
+      poolMark(node, false, "网络错");
+      console.log(`[pool] ${node.name} 连接失败(${e.message})，换节点重试`);
+    }
+  }
+}
+poolLoad();
+// ============ 出站代理池结束 ============
 
 // ---------- 中文日志 ----------
 // 科技面板风，两行式（开始行 + 结果行，靠 #N 配对，并发下也不乱）：
@@ -3810,7 +4034,7 @@ const server = http.createServer((req, res) => {
         const logModel = forceSearch ? `${_lm} 🔍` : _lm;
         zenStartLog(seq, logModel, msgCount, clientTag);
       }
-      const upstream = await fetch(UPSTREAM + upstreamPath, {
+      const upstream = await upstreamFetch(UPSTREAM + upstreamPath, {
         method: req.method,
         headers,
         body: (translateToResponses ? responsesBody : translateToChat ? chatBody : body)
@@ -3933,7 +4157,7 @@ const server = http.createServer((req, res) => {
             for (let roundF = 0; roundF < 5; roundF++) {
               let upF = upstream;
               if (roundF > 0) {
-                upF = await fetch(UPSTREAM + upstreamPath, {
+                upF = await upstreamFetch(UPSTREAM + upstreamPath, {
                   method: "POST",
                   headers,
                   body: JSON.stringify({ ...responsesBody, input: currentInputF }),
@@ -3976,7 +4200,7 @@ const server = http.createServer((req, res) => {
                 // 5 轮上限：最后一轮 follow-up 不再拦截，直接收尾
                 console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
                 try {
-                  const finalF = await fetch(UPSTREAM + upstreamPath, {
+                  const finalF = await upstreamFetch(UPSTREAM + upstreamPath, {
                     method: "POST",
                     headers,
                     body: JSON.stringify({ ...responsesBody, input: currentInputF }),
@@ -4023,7 +4247,7 @@ const server = http.createServer((req, res) => {
             if (roundFN === 0) {
               sseTextFN = (await readUpstreamBody(upstream)).toString();
             } else {
-              const upFN = await fetch(UPSTREAM + upstreamPath, {
+              const upFN = await upstreamFetch(UPSTREAM + upstreamPath, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...responsesBody, input: currentInputFN }),
@@ -4062,7 +4286,7 @@ const server = http.createServer((req, res) => {
             if (roundFN === 4) {
               console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
               try {
-                const finalFN = await fetch(UPSTREAM + upstreamPath, {
+                const finalFN = await upstreamFetch(UPSTREAM + upstreamPath, {
                   method: "POST",
                   headers,
                   body: JSON.stringify({ ...responsesBody, input: currentInputFN }),
@@ -4133,7 +4357,7 @@ const server = http.createServer((req, res) => {
             let up = upstream;
             if (round > 0) {
               const reqBody = { ...responsesBody, input: currentInput };
-              up = await fetch(UPSTREAM + upstreamPath, {
+              up = await upstreamFetch(UPSTREAM + upstreamPath, {
                 method: "POST",
                 headers,
                 body: JSON.stringify(reqBody),
@@ -4184,7 +4408,7 @@ const server = http.createServer((req, res) => {
               // 最后一轮：再发一次 follow-up 拿模型的最终回答（不再允许新的工具调用，
               // 用空拦截集合），否则客户端收不到收尾的 [DONE]
               try {
-                const finalUp = await fetch(UPSTREAM + upstreamPath, {
+                const finalUp = await upstreamFetch(UPSTREAM + upstreamPath, {
                   method: "POST",
                   headers,
                   body: JSON.stringify({ ...responsesBody, input: currentInput }),
@@ -4254,7 +4478,7 @@ const server = http.createServer((req, res) => {
           if (roundNS === 0) {
             sseTextNS = (await readUpstreamBody(upstream)).toString();
           } else {
-            const upNS = await fetch(UPSTREAM + upstreamPath, {
+            const upNS = await upstreamFetch(UPSTREAM + upstreamPath, {
               method: "POST",
               headers,
               body: JSON.stringify({ ...responsesBody, input: currentInputNS }),
@@ -4288,7 +4512,7 @@ const server = http.createServer((req, res) => {
             // 5 轮上限：再做一次 follow-up 拿最终回答（不再拦截工具调用）
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalNS = await fetch(UPSTREAM + upstreamPath, {
+              const finalNS = await upstreamFetch(UPSTREAM + upstreamPath, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...responsesBody, input: currentInputNS }),
@@ -4463,7 +4687,7 @@ const server = http.createServer((req, res) => {
           if (roundC === 0) {
             sseTextC = sseText;
           } else {
-            const upC = await fetch(UPSTREAM + upstreamPath, {
+            const upC = await upstreamFetch(UPSTREAM + upstreamPath, {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, messages: currentMessagesC }),
@@ -4519,7 +4743,7 @@ const server = http.createServer((req, res) => {
           if (roundC === 4) {
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalC = await fetch(UPSTREAM + upstreamPath, {
+              const finalC = await upstreamFetch(UPSTREAM + upstreamPath, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, messages: currentMessagesC }),
@@ -4570,7 +4794,7 @@ const server = http.createServer((req, res) => {
           if (roundE === 0) {
             sseTextE = sseText;
           } else {
-            const upE = await fetch(UPSTREAM + upstreamPath, {
+            const upE = await upstreamFetch(UPSTREAM + upstreamPath, {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, input: currentInputE }),
@@ -4609,7 +4833,7 @@ const server = http.createServer((req, res) => {
           if (roundE === 4) {
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalE = await fetch(UPSTREAM + upstreamPath, {
+              const finalE = await upstreamFetch(UPSTREAM + upstreamPath, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, input: currentInputE }),
@@ -4656,7 +4880,7 @@ const server = http.createServer((req, res) => {
         for (let roundB = 0; roundB < 5; roundB++) {
           let upB = upstream;
           if (roundB > 0) {
-            upB = await fetch(UPSTREAM + upstreamPath, {
+            upB = await upstreamFetch(UPSTREAM + upstreamPath, {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, messages: currentMessagesB }),
@@ -4722,7 +4946,7 @@ const server = http.createServer((req, res) => {
             // 5 轮上限：最后一轮 follow-up 不再拦截，直接收尾
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalB = await fetch(UPSTREAM + upstreamPath, {
+              const finalB = await upstreamFetch(UPSTREAM + upstreamPath, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, messages: currentMessagesB }),
@@ -4777,7 +5001,7 @@ const server = http.createServer((req, res) => {
         for (let roundD = 0; roundD < 5; roundD++) {
           let upD = upstream;
           if (roundD > 0) {
-            upD = await fetch(UPSTREAM + upstreamPath, {
+            upD = await upstreamFetch(UPSTREAM + upstreamPath, {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, input: currentInputD }),
@@ -4812,7 +5036,7 @@ const server = http.createServer((req, res) => {
           if (roundD === 4) {
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalD = await fetch(UPSTREAM + upstreamPath, {
+              const finalD = await upstreamFetch(UPSTREAM + upstreamPath, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, input: currentInputD }),
@@ -4935,7 +5159,7 @@ server.listen(PORT, () => {
   console.log(`反代已启动 http://127.0.0.1:${PORT}`);
   console.log(`RikkaHub 接口地址填 http://127.0.0.1:${PORT}/v1（Key 随便填）`);
   console.log(`原生搜索：${WEBSEARCH_ENABLED ? "开" : "关"}｜网页抓取：${WEBFETCH_ENABLED ? "开" : "关"}`);
-  console.log(`模型名加 -search 后缀可按需启用搜索（如 muse-spark-1.3-contributor-free-search）`);
+  console.log(`模型名加 -search 后缀可按需启用搜索（如 deepseek-v4.1-flash-free-search）`);
   if (getApiKey() === "public") {
     console.log("免费模式：免 Key，仅可用免费模型");
   } else {
