@@ -320,7 +320,7 @@ async function t_S1() {
   const exposed = r.text.includes("webfetch");
   const ok = r.status === 200
     && first && first.toolNames.includes("webfetch") && first.toolNames.includes("websearch")
-    && first.toolNames.includes("read") && first.toolNames.includes("shell")
+    && first.toolNames.includes("read") && !first.toolNames.includes("shell") // v66: 老车道只塞 read 空壳（对齐 opencode2api 2026-10-17 实测）
     && !exposed
     && fh.length >= 1
     && ups.length === 2 && ups[1].followUp === true
@@ -358,7 +358,7 @@ async function t_S3() {
   const first = ups[0];
   const ok = r.status === 200
     && first && !first.toolNames.includes("webfetch") && !first.toolNames.includes("websearch")
-    && first.toolNames.includes("read") && first.toolNames.includes("shell")
+    && first.toolNames.includes("read") && !first.toolNames.includes("shell") // v66: 老车道只塞 read 空壳（对齐 opencode2api 2026-10-17 实测）
     && tcs.length === 1 && tcs[0].name === "webfetch"   // 透传给客户端，未本地执行
     && chatFinishOf(evs) === "tool_calls"
     && ups.length === 1;  // 无 follow-up：没有本地执行

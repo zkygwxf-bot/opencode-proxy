@@ -36,6 +36,7 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 import dns from "node:dns";
+import { createHash, randomBytes } from "node:crypto";
 
 const PORT_RAW = process.env.PORT || "8788";
 const PORT = Number(PORT_RAW);
@@ -46,6 +47,26 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   process.exit(1);
 }
 const UPSTREAM = "https://opencode.ai";
+// 双车道（2026-10-17 对齐 opencode2api 的可用性设计）：主车道 /zen/v1（老通道，
+// v1.3.7 请求形状）；一旦被免费门以 FreeTierError 拒绝，自动切换到 /inference
+// 新车道（2.x 请求形状 + 真工具定义），后续请求全部走新车道，不再反复撞门。
+let LANE = "zen";
+function laneUrl(upstreamPath) {
+  return (
+    UPSTREAM +
+    (LANE === "inference"
+      ? upstreamPath.replace(/^\/zen/, "/inference")
+      : upstreamPath)
+  );
+}
+function noteFreeTierError() {
+  if (LANE === "zen") {
+    LANE = "inference";
+    console.error(
+      "【车道】/zen/v1 老通道被免费门拒绝，已自动切换到 /inference 新车道，后续请求走新车道（客户端重试即可恢复）。"
+    );
+  }
+}
 const DIR = import.meta.dirname;
 
 // ---------- 身份文件存放（v64） ----------
@@ -216,16 +237,43 @@ const RESPONSES_TOOLS = loadToolsJson("tools-responses.json");
 // (verified empirically 2026-10-05: fewer/other names -> 403 FreeTierError).
 // Injecting just these two keeps the model focused on the app's real tools
 // instead of getting distracted by a dozen fake ones.
-const DISGUISE_NAMES = ["read", "shell"];
-const DISGUISE_CHAT = CHAT_TOOLS.filter((t) =>
-  DISGUISE_NAMES.includes(t.function?.name)
+const DISGUISE_NAMES = ["read"];
+// 2026-10-17 对齐 opencode2api 当日实测（commit a9470df）：/zen/v1 老通道门控
+// 现在只需要一个名为 "read" 的工具，带 shell/bash/edit 等反而多余；描述与
+// schema 不校验。客户端没有 read 时注入这个轻量 stub（描述明示禁用、勿调用）。
+const READ_STUB_DESC =
+  "DEPRECATED: This tool is deprecated and disabled. Do NOT call or reference this tool under any circumstances; ignore it completely.";
+const DISGUISE_CHAT = [
+  {
+    type: "function",
+    function: {
+      name: "read",
+      description: READ_STUB_DESC,
+      parameters: { type: "object", properties: {} },
+    },
+  },
+];
+const DISGUISE_RESPONSES = [
+  {
+    type: "function",
+    name: "read",
+    description: READ_STUB_DESC,
+    parameters: { type: "object", properties: {} },
+  },
+];
+// /inference 新车道的核心工具：门控会逐字校验它认识的工具定义，必须用从真
+// 客户端抓下来的原版（tools-*.json 里现成的），名字集合对齐 opencode2api
+// 的 anonymousCoreTools：shell / edit / glob / grep / read。
+const GENUINE_NAMES = ["shell", "edit", "glob", "grep", "read"];
+const GENUINE_CHAT = CHAT_TOOLS.filter((t) =>
+  GENUINE_NAMES.includes(t.function?.name)
 );
-const DISGUISE_RESPONSES = RESPONSES_TOOLS.filter((t) =>
-  DISGUISE_NAMES.includes(t.name)
+const GENUINE_RESPONSES = RESPONSES_TOOLS.filter((t) =>
+  GENUINE_NAMES.includes(t.name)
 );
 // 启动期断言：伪装工具丢了会导致每个请求 403，趁早大声报错
-if (DISGUISE_CHAT.length < 2 || DISGUISE_RESPONSES.length < 2) {
-  console.error("伪装工具 read/shell 未在 tools-*.json 中找到，免费门控无法通过，请检查安装包");
+if (DISGUISE_CHAT[0]?.function?.name !== "read" || DISGUISE_RESPONSES[0]?.name !== "read") {
+  console.error("伪装工具 read 构造失败，免费门控无法通过，请检查安装包");
   process.exit(1);
 }
 // 深冻：DISGUISE_* 与 CHAT_TOOLS 共享对象引用，冻住防止未来某处误改污染所有请求
@@ -427,11 +475,34 @@ function sessionStatus() {
 function identityHeaders(session) {
   const h = {};
   if (!session) return h;
+  if (LANE === "inference") {
+    // /inference 新车道（对齐 opencode2api / 官方 2.x 客户端形状）：
+    // UA 用 opencode/<channel>/<version>/cli；带 x-opencode-session-id；
+    // project 用裸 40 位 hex；不发 x-opencode-request。
+    const sid2 = freshSessionId();
+    h["user-agent"] = "opencode/latest/2.0.29/cli";
+    h["x-opencode-client"] = "cli";
+    h["x-opencode-session-id"] = sid2;
+    h["x-opencode-session"] = sid2;
+    h["x-session-affinity"] = sid2;
+    h["X-Session-Id"] = sid2;
+    h["x-opencode-project"] = createHash("sha256")
+      .update("opencode-proxy-project")
+      .digest("hex")
+      .slice(0, 40);
+    return h;
+  }
   h["user-agent"] = session.userAgent || "opencode/latest/2.0.28/cli";
   if (session.xOpencodeClient) h["x-opencode-client"] = session.xOpencodeClient;
   if (session.xOpencodeOrgId) h["x-opencode-org-id"] = session.xOpencodeOrgId;
-  if (session.xOpencodeProject)
-    h["x-opencode-project"] = session.xOpencodeProject;
+  // 2026-10-17 对齐 opencode2api legacy 车道：project 头用 prj_ 规范 id
+  //（StableID：sha256("prj\\0"+signal) 前 12 字节 hex），不再发原始值。
+  h["x-opencode-project"] =
+    "prj_" +
+    createHash("sha256")
+      .update("prj\0" + (session.xOpencodeProject || "global"))
+      .digest("hex")
+      .slice(0, 24);
   // v58 (2026-10-13): 免费层门控现在直接拉黑陈旧的匿名 session id ——
   // 10-05 抓到的 session.json 三个 id 即使头/body 全对也 403，而任意格式正确
   // 的新 id（"ses_"+descending()，与真客户端 Session.ID.create() 同格式）
@@ -440,13 +511,15 @@ function identityHeaders(session) {
   // 外加 X-Session-Id），这里照做；12 小时轮换一次，防服务端过期。
   // 上游不校验时间戳新旧（8 天前的时间戳也 200），只认"没烧过的 id"。
   const sid = freshSessionId();
-  h["x-opencode-session-id"] = sid;
+  // 2026-10-17 对齐 opencode2api：x-opencode-session-id 是 /inference 车道的头，
+  // /zen/v1 老通道不发（只发 x-opencode-session / x-session-affinity / X-Session-Id）。
   h["x-opencode-session"] = sid;
   h["x-session-affinity"] = sid;
   h["X-Session-Id"] = sid;
   // 官方此处发稳定的 user.id（非每次生成）。优先复用从真客户端学到的值，
   // 学不到才回退到 fresh msg_ id（门控当前不校验此头）。
-  h["x-opencode-request"] = session.xOpencodeRequest || freshMsgId();
+  // 2026-10-17 对齐 opencode2api：x-opencode-request 用 req_ + 32 位 hex 随机值。
+  h["x-opencode-request"] = "req_" + randomBytes(16).toString("hex");
   return h;
 }
 
@@ -501,19 +574,33 @@ function sanitizeToolChoice(body) {
 }
 
 function ensureChatTools(body, skipProxyTools = false) {
-  const tools = Array.isArray(body.tools) ? body.tools : [];
+  const DISGUISE_CHAT_L =
+    LANE === "inference" ? GENUINE_CHAT : DISGUISE_CHAT;
+  let tools = Array.isArray(body.tools) ? body.tools : [];
+  if (LANE === "inference" && tools.length > 0) {
+    // 新车道门控逐字校验它认识的工具定义：客户端自带的同名工具换成原版定义，
+    // 不认识的原样保留（对齐 opencode2api ensureAnonymousTools 的 /inference 分支）。
+    const genuineByName = new Map(
+      GENUINE_CHAT.map((t) => [t.function?.name, t])
+    );
+    tools = tools.map((t) => {
+      const g = genuineByName.get(t?.function?.name || t?.name);
+      return g || t;
+    });
+    body.tools = tools;
+  }
   if (tools.length === 0) {
     // No app tools: disguise only (the free-tier gate needs the read/shell
     // names present). tool_choice is left alone: upstream only supports
     // "auto", and empirically the model doesn't call the disguise tools
     // unprompted.
-    body.tools = DISGUISE_CHAT.slice();
+    body.tools = DISGUISE_CHAT_L.slice();
   } else {
     // Merge: keep the app's tools, append disguise tools for missing names.
     const names = new Set(
       tools.map((t) => t?.function?.name || t?.name).filter(Boolean)
     );
-    for (const dt of DISGUISE_CHAT) {
+    for (const dt of DISGUISE_CHAT_L) {
       const n = dt?.function?.name;
       if (n && !names.has(n)) {
         tools.push(dt);
@@ -622,15 +709,21 @@ function responsesFormatToText(rf) {
 }
 
 function ensureResponsesTools(body, skipProxyTools = false) {
-  const appTools = (Array.isArray(body.tools) ? body.tools : [])
+  let appTools = (Array.isArray(body.tools) ? body.tools : [])
     .map(toResponsesTool)
     .filter(Boolean);
+  if (LANE === "inference" && appTools.length > 0) {
+    const genuineByNameR = new Map(GENUINE_RESPONSES.map((t) => [t.name, t]));
+    appTools = appTools.map((t) => genuineByNameR.get(t?.name) || t);
+  }
+  const DISGUISE_RESPONSES_L =
+    LANE === "inference" ? GENUINE_RESPONSES : DISGUISE_RESPONSES;
   // Merge: app tools first, then disguise tools for any missing names.
   // The free-tier gate needs its tool names present; the model is free
   // to call the app's tools.
   const names = new Set(appTools.map((t) => t.name));
   const merged = [...appTools];
-  for (const dt of DISGUISE_RESPONSES) {
+  for (const dt of DISGUISE_RESPONSES_L) {
     if (!names.has(dt.name)) {
       merged.push(dt);
       names.add(dt.name);
@@ -4137,7 +4230,7 @@ const server = http.createServer((req, res) => {
     const headers = {
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
-      accept: "*/*",
+      accept: "application/json, text/event-stream",
       ...identityHeaders(session),
     };
 
@@ -4202,7 +4295,7 @@ const server = http.createServer((req, res) => {
         const logModel = forceSearch ? `${_lm} 🔍` : _lm;
         zenStartLog(seq, logModel, msgCount, clientTag);
       }
-      const upstream = await fetch(UPSTREAM + upstreamPath, {
+      const upstream = await fetch(laneUrl(upstreamPath), {
         method: req.method,
         headers,
         body: (translateToResponses ? responsesBody : translateToChat ? chatBody : body)
@@ -4222,8 +4315,9 @@ const server = http.createServer((req, res) => {
         const text = await upstream.text();
         if (text.includes("FreeTierError")) {
           console.error(
-            "上游报错：免费身份已过期。续命办法：把 opencode 的 baseURL 指到本反代（http://127.0.0.1:8788/zen/v1）发一次请求，反代会自动保存新身份；不会操作就找姐姐帮忙。"
+            "上游报错：免费层拒绝（403 FreeTierError）"
           );
+        noteFreeTierError();
         }
 
       res.writeHead(upstream.status, { "content-type": "application/json" });
@@ -4301,8 +4395,9 @@ const server = http.createServer((req, res) => {
         const text = await upstream.text();
         if (text.includes("FreeTierError")) {
           console.error(
-            "上游报错：免费身份已过期。续命办法：把 opencode 的 baseURL 指到本反代（http://127.0.0.1:8788/zen/v1）发一次请求，反代会自动保存新身份；不会操作就找姐姐帮忙。"
+            "上游报错：免费层拒绝（403 FreeTierError）"
           );
+        noteFreeTierError();
         }
         res.writeHead(upstream.status, {
           "content-type": ctype || "application/json",
@@ -4335,7 +4430,7 @@ const server = http.createServer((req, res) => {
             for (let roundF = 0; roundF < 5; roundF++) {
               let upF = upstream;
               if (roundF > 0) {
-                upF = await fetch(UPSTREAM + upstreamPath, {
+                upF = await fetch(laneUrl(upstreamPath), {
                   method: "POST",
                   headers,
                   body: JSON.stringify({ ...responsesBody, input: currentInputF }),
@@ -4381,7 +4476,7 @@ const server = http.createServer((req, res) => {
                 // 5 轮上限：最后一轮 follow-up 不再拦截，直接收尾
                 console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
                 try {
-                  const finalF = await fetch(UPSTREAM + upstreamPath, {
+                  const finalF = await fetch(laneUrl(upstreamPath), {
                     method: "POST",
                     headers,
                     body: JSON.stringify({ ...responsesBody, input: currentInputF }),
@@ -4428,7 +4523,7 @@ const server = http.createServer((req, res) => {
             if (roundFN === 0) {
               sseTextFN = (await readUpstreamBody(upstream)).toString();
             } else {
-              const upFN = await fetch(UPSTREAM + upstreamPath, {
+              const upFN = await fetch(laneUrl(upstreamPath), {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...responsesBody, input: currentInputFN }),
@@ -4474,7 +4569,7 @@ const server = http.createServer((req, res) => {
             if (roundFN === 4) {
               console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
               try {
-                const finalFN = await fetch(UPSTREAM + upstreamPath, {
+                const finalFN = await fetch(laneUrl(upstreamPath), {
                   method: "POST",
                   headers,
                   body: JSON.stringify({ ...responsesBody, input: currentInputFN }),
@@ -4549,7 +4644,7 @@ const server = http.createServer((req, res) => {
             let up = upstream;
             if (round > 0) {
               const reqBody = { ...responsesBody, input: currentInput };
-              up = await fetch(UPSTREAM + upstreamPath, {
+              up = await fetch(laneUrl(upstreamPath), {
                 method: "POST",
                 headers,
                 body: JSON.stringify(reqBody),
@@ -4603,7 +4698,7 @@ const server = http.createServer((req, res) => {
               // 最后一轮：再发一次 follow-up 拿模型的最终回答（不再允许新的工具调用，
               // 用空拦截集合），否则客户端收不到收尾的 [DONE]
               try {
-                const finalUp = await fetch(UPSTREAM + upstreamPath, {
+                const finalUp = await fetch(laneUrl(upstreamPath), {
                   method: "POST",
                   headers,
                   body: JSON.stringify({ ...responsesBody, input: currentInput }),
@@ -4673,7 +4768,7 @@ const server = http.createServer((req, res) => {
           if (roundNS === 0) {
             sseTextNS = (await readUpstreamBody(upstream)).toString();
           } else {
-            const upNS = await fetch(UPSTREAM + upstreamPath, {
+            const upNS = await fetch(laneUrl(upstreamPath), {
               method: "POST",
               headers,
               body: JSON.stringify({ ...responsesBody, input: currentInputNS }),
@@ -4685,7 +4780,7 @@ const server = http.createServer((req, res) => {
           }
           if (sseTextNS.includes("FreeTierError") && roundNS === 0) {
             console.error(
-              "上游报错：免费身份已过期。续命办法：把 opencode 的 baseURL 指到本反代（http://127.0.0.1:8788/zen/v1）发一次请求，反代会自动保存新身份；不会操作就找姐姐帮忙。"
+              "上游报错：免费层拒绝（403 FreeTierError）"
             );
           }
           respObj = sseToResponse(sseTextNS, body?.model || "unknown", collectToolNames(body, forceSearch));
@@ -4716,7 +4811,7 @@ const server = http.createServer((req, res) => {
             // 5 轮上限：再做一次 follow-up 拿最终回答（不再拦截工具调用）
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalNS = await fetch(UPSTREAM + upstreamPath, {
+              const finalNS = await fetch(laneUrl(upstreamPath), {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...responsesBody, input: currentInputNS }),
@@ -4811,7 +4906,7 @@ const server = http.createServer((req, res) => {
               if (clientGone) break;
               let upX = upstream;
               if (roundX > 0) {
-                upX = await fetch(UPSTREAM + upstreamPath, {
+                upX = await fetch(laneUrl(upstreamPath), {
                   method: "POST",
                   headers,
                   body: JSON.stringify({
@@ -4906,7 +5001,7 @@ const server = http.createServer((req, res) => {
                   "内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾"
                 );
                 try {
-                  const finalX = await fetch(UPSTREAM + upstreamPath, {
+                  const finalX = await fetch(laneUrl(upstreamPath), {
                     method: "POST",
                     headers,
                     body: JSON.stringify({
@@ -4981,7 +5076,8 @@ const server = http.createServer((req, res) => {
             // 无搜索：v62 行为
             const sseText = (await readUpstreamBody(upstream)).toString();
             if (sseText.includes("FreeTierError")) {
-              console.error("上游报错：免费身份已过期。");
+              console.error("上游报错：免费层拒绝（403 FreeTierError）");
+            noteFreeTierError();
             }
             chatObj = sseToChatCompletion(sseText, targetModel);
             if (chatObj.error) {
@@ -5001,10 +5097,11 @@ const server = http.createServer((req, res) => {
               if (roundY === 0) {
                 sseTextY = (await readUpstreamBody(upstream)).toString();
                 if (sseTextY.includes("FreeTierError")) {
-                  console.error("上游报错：免费身份已过期。");
+                  console.error("上游报错：免费层拒绝（403 FreeTierError）");
+                noteFreeTierError();
                 }
               } else {
-                const upY = await fetch(UPSTREAM + upstreamPath, {
+                const upY = await fetch(laneUrl(upstreamPath), {
                   method: "POST",
                   headers,
                   body: JSON.stringify({
@@ -5077,7 +5174,7 @@ const server = http.createServer((req, res) => {
                   "内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾"
                 );
                 try {
-                  const finalY = await fetch(UPSTREAM + upstreamPath, {
+                  const finalY = await fetch(laneUrl(upstreamPath), {
                     method: "POST",
                     headers,
                     body: JSON.stringify({
@@ -5216,8 +5313,9 @@ const server = http.createServer((req, res) => {
         const sseText = (await readUpstreamBody(upstream)).toString();
         if (sseText.includes("FreeTierError")) {
           console.error(
-            "上游报错：免费身份已过期。续命办法：把 opencode 的 baseURL 指到本反代（http://127.0.0.1:8788/zen/v1）发一次请求，反代会自动保存新身份；不会操作就找姐姐帮忙。"
+            "上游报错：免费层拒绝（403 FreeTierError）"
           );
+        noteFreeTierError();
         }
         const interceptBaseC = forceSearch ? ALL_PROXY_TOOL_NAMES : new Set();
         const interceptNamesC = new Set(
@@ -5232,7 +5330,7 @@ const server = http.createServer((req, res) => {
           if (roundC === 0) {
             sseTextC = sseText;
           } else {
-            const upC = await fetch(UPSTREAM + upstreamPath, {
+            const upC = await fetch(laneUrl(upstreamPath), {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, messages: currentMessagesC }),
@@ -5295,7 +5393,7 @@ const server = http.createServer((req, res) => {
           if (roundC === 4) {
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalC = await fetch(UPSTREAM + upstreamPath, {
+              const finalC = await fetch(laneUrl(upstreamPath), {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, messages: currentMessagesC }),
@@ -5334,8 +5432,9 @@ const server = http.createServer((req, res) => {
         const sseText = (await readUpstreamBody(upstream)).toString();
         if (sseText.includes("FreeTierError")) {
           console.error(
-            "上游报错：免费身份已过期。续命办法：把 opencode 的 baseURL 指到本反代（http://127.0.0.1:8788/zen/v1）发一次请求，反代会自动保存新身份；不会操作就找姐姐帮忙。"
+            "上游报错：免费层拒绝（403 FreeTierError）"
           );
+        noteFreeTierError();
         }
         const interceptBaseE = forceSearch ? ALL_PROXY_TOOL_NAMES : new Set();
         const interceptNamesE = new Set(
@@ -5350,7 +5449,7 @@ const server = http.createServer((req, res) => {
           if (roundE === 0) {
             sseTextE = sseText;
           } else {
-            const upE = await fetch(UPSTREAM + upstreamPath, {
+            const upE = await fetch(laneUrl(upstreamPath), {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, input: currentInputE }),
@@ -5396,7 +5495,7 @@ const server = http.createServer((req, res) => {
           if (roundE === 4) {
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalE = await fetch(UPSTREAM + upstreamPath, {
+              const finalE = await fetch(laneUrl(upstreamPath), {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, input: currentInputE }),
@@ -5447,7 +5546,7 @@ const server = http.createServer((req, res) => {
         for (let roundB = 0; roundB < 5; roundB++) {
           let upB = upstream;
           if (roundB > 0) {
-            upB = await fetch(UPSTREAM + upstreamPath, {
+            upB = await fetch(laneUrl(upstreamPath), {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, messages: currentMessagesB }),
@@ -5529,7 +5628,7 @@ const server = http.createServer((req, res) => {
             // 5 轮上限：最后一轮 follow-up 不再拦截，直接收尾
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalB = await fetch(UPSTREAM + upstreamPath, {
+              const finalB = await fetch(laneUrl(upstreamPath), {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, messages: currentMessagesB }),
@@ -5584,7 +5683,7 @@ const server = http.createServer((req, res) => {
         for (let roundD = 0; roundD < 5; roundD++) {
           let upD = upstream;
           if (roundD > 0) {
-            upD = await fetch(UPSTREAM + upstreamPath, {
+            upD = await fetch(laneUrl(upstreamPath), {
               method: "POST",
               headers,
               body: JSON.stringify({ ...body, input: currentInputD }),
@@ -5622,7 +5721,7 @@ const server = http.createServer((req, res) => {
           if (roundD === 4) {
             console.warn("内置工具调用达到 5 轮上限，做最后一轮 follow-up 收尾");
             try {
-              const finalD = await fetch(UPSTREAM + upstreamPath, {
+              const finalD = await fetch(laneUrl(upstreamPath), {
                 method: "POST",
                 headers,
                 body: JSON.stringify({ ...body, input: currentInputD }),
@@ -5744,6 +5843,37 @@ server.on("error", (e) => {
 });
 server.listen(PORT, () => {
   console.log(`反代已启动 http://127.0.0.1:${PORT}`);
+  // 启动探针：先用老车道发一个最小请求探门，被 FreeTierError 拒绝就开局
+  // 直接切到新车道，省得用户第一句就撞门（对齐 opencode2api 的车道偏好+回退）。
+  (async () => {
+    try {
+      const s = sessionStatus().session;
+      const resp = await fetch(laneUrl("/zen/v1/chat/completions"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: "Bearer " + getApiKey(),
+          ...identityHeaders(s),
+        },
+        body: JSON.stringify({
+          model: "beam-free",
+          messages: [{ role: "user", content: "ping" }],
+          stream: true,
+          tools: DISGUISE_CHAT,
+        }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const t = await resp.text();
+      if (t.includes("FreeTierError")) {
+        noteFreeTierError();
+      } else {
+        console.log("【车道】启动探针：/zen/v1 老通道可用，当前车道 zen。");
+      }
+    } catch (e) {
+      console.log("【车道】启动探针未完成（不影响使用）：" + (e?.message || e));
+    }
+  })();
   console.log(`RikkaHub 接口地址填 http://127.0.0.1:${PORT}/v1（Key 随便填）`);
   console.log(`原生搜索：${WEBSEARCH_ENABLED ? "开" : "关"}｜网页抓取：${WEBFETCH_ENABLED ? "开" : "关"}`);
   console.log(`模型名加 -search 后缀可按需启用搜索（如 deepseek-v4.1-flash-free-search）`);

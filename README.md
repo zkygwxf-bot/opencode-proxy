@@ -17,18 +17,18 @@
 
 ## 安装
 
-v65
+v66
 
-老用户更新命令（先备份登录凭证再重装，装完自动恢复）：
+老用户更新命令（登录凭证保存在安装目录之外，更新不会被冲掉）：
 
 ```
-cp ~/opencode-proxy/session.json ~/session.json.bak 2>/dev/null; rm -rf ~/opencode-proxy ~/v64.zip ~/v63.zip && rm -f $PREFIX/bin/ai && curl -sL -o ~/v65.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v65/opencode-proxy-phone-v65.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v65.zip -d ~/opencode-proxy && cp ~/session.json.bak ~/opencode-proxy/session.json 2>/dev/null; rm -f ~/session.json.bak && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+rm -rf ~/opencode-proxy ~/v65.zip ~/v64.zip && rm -f $PREFIX/bin/ai && curl -sL -o ~/v66.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v66/opencode-proxy-phone-v66.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v66.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 新用户安装命令：
 
 ```
-curl -sL -o ~/v65.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v65/opencode-proxy-phone-v65.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v65.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+curl -sL -o ~/v66.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v66/opencode-proxy-phone-v66.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v66.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 ## 使用
