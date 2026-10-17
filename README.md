@@ -17,18 +17,18 @@
 
 ## 安装
 
-v62
+v63
 
 老用户更新命令：
 
 ```
-rm -rf ~/opencode-proxy && curl -sL -o ~/v62.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v62/opencode-proxy-phone-v62.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v62.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+rm -rf ~/opencode-proxy && curl -sL -o ~/v63.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v63/opencode-proxy-phone-v63.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v63.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 新用户安装命令：
 
 ```
-curl -sL -o ~/v62.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v62/opencode-proxy-phone-v62.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v62.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+curl -sL -o ~/v63.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v63/opencode-proxy-phone-v63.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v63.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 ## 使用
