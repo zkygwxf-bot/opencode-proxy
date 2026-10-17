@@ -23,6 +23,7 @@ const DISGUISE = new Set(["read", "shell"]);
 const PROXY_BUILTIN = new Set(["webfetch", "websearch"]);
 
 function textsOf(items) {
+  if (typeof items === "string") return items; // v65: responses 原生 input 可能是字符串
   const out = [];
   for (const m of items || []) {
     if (!m || typeof m !== "object" || m.role !== "user") continue;
@@ -65,6 +66,16 @@ const isFollowUp = (body) => {
   }
   return false;
 };
+// v65: follow-up 里已有的工具结果条数（多轮搜索场景用）
+const nToolOutputs = (body) => {
+  let n = 0;
+  for (const m of body.messages || body.input || []) {
+    if (!m || typeof m !== "object") continue;
+    if (m.role === "tool") n++;
+    else if (m.type === "function_call_output") n++;
+  }
+  return n;
+};
 const toolNames = (body) =>
   (body.tools || []).map((t) => t?.function?.name || t?.name).filter(Boolean);
 const clientToolName = (body) =>
@@ -88,7 +99,7 @@ function chatSSE(body, scenario, mark) {
   const model = body.model || "m";
   const fu = isFollowUp(body);
   // 未知 scenario（如 slow 延迟后）按 text 处理
-  const scn = scenario === "searchloop" ? "searchloop" : fu ? "final" : ["text","toolcall","searchcall","reasoning","final","fetchprobe","len","cf","fragname","twotools"].includes(scenario) ? scenario : "text";
+  const scn = scenario === "searchloop" ? "searchloop" : scenario === "searchrounds" ? "searchrounds" : scenario === "slowsearch" ? "slowsearch" : fu ? "final" : ["text","toolcall","searchcall","reasoning","final","fetchprobe","len","cf","fragname","twotools","threesearch","threesearchfail","threesearchfailfirst","threemix","mixsearch","mixsearchfailfetch"].includes(scenario) ? scenario : "text";
   const name = clientToolName(body);
   let s = "";
   const done = () => (s += "data: [DONE]\n\n");
@@ -162,12 +173,123 @@ function chatSSE(body, scenario, mark) {
     done();
   } else if (scn === "searchloop") {
     // D组: 每轮都调 webfetch（含 follow-up），测 proxy 5 轮上限
-    const args = JSON.stringify({ url: "http://127.0.0.1:18901/page", format: "text" });
-    s += cc(id, model, { role: "assistant", tool_calls: [{ index: 0, id: "call_mock_loop", type: "function", function: { name: "webfetch", arguments: "" } }] });
-    s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: args } }] });
+    // v65: 第 6 次上游（收尾 follow-up，已有 5 个工具结果）返回正文，
+    // 模拟真实模型在上限轮收敛回答
+    if (nToolOutputs(body) >= 5) {
+      s += cc(id, model, { role: "assistant", content: `MOCK-FINAL ${mark}${echoOutputs(body)}` });
+      s += cc(id, model, {}, "stop");
+      s += cUsage(id, model, { input_tokens: 51, output_tokens: 5, total_tokens: 56 });
+      done();
+    } else {
+      const args = JSON.stringify({ url: "http://127.0.0.1:18901/page", format: "text" });
+      s += cc(id, model, { role: "assistant", tool_calls: [{ index: 0, id: "call_mock_loop", type: "function", function: { name: "webfetch", arguments: "" } }] });
+      s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: args } }] });
+      s += cc(id, model, {}, "tool_calls");
+      s += cUsage(id, model, { input_tokens: 61, output_tokens: 11, total_tokens: 72 });
+      done();
+    }
+  } else if (scn === "threesearch") {
+    // v65 P1/P2：一轮 3 个 websearch 调用（SLOW 延迟由 mock exa 提供）
+    const qs = ["SLOW Q1 apple", "SLOW Q2 banana", "SLOW Q3 cherry"];
+    qs.forEach((q, i) => {
+      const args = JSON.stringify({ query: q });
+      s += cc(id, model, { role: "assistant", tool_calls: [{ index: i, id: `call_mock_s${i + 1}`, type: "function", function: { name: "websearch", arguments: "" } }] });
+      s += cc(id, model, { tool_calls: [{ index: i, function: { arguments: args } }] });
+    });
     s += cc(id, model, {}, "tool_calls");
-    s += cUsage(id, model, { input_tokens: 61, output_tokens: 11, total_tokens: 72 });
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 41, total_tokens: 102 });
     done();
+  } else if (scn === "threesearchfail") {
+    // v65 P3：3 调用中 1 个失败（FAILME -> mock exa 500），失败项在中间
+    const qs = ["SLOW Q1 apple", "FAILME boom", "SLOW Q3 cherry"];
+    qs.forEach((q, i) => {
+      const args = JSON.stringify({ query: q });
+      s += cc(id, model, { role: "assistant", tool_calls: [{ index: i, id: `call_mock_f${i + 1}`, type: "function", function: { name: "websearch", arguments: "" } }] });
+      s += cc(id, model, { tool_calls: [{ index: i, function: { arguments: args } }] });
+    });
+    s += cc(id, model, {}, "tool_calls");
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 41, total_tokens: 102 });
+    done();
+  } else if (scn === "threesearchfailfirst") {
+    // v65 P3b：失败项在第一位
+    const qs = ["FAILME first", "SLOW Q2 banana", "SLOW Q3 cherry"];
+    qs.forEach((q, i) => {
+      const args = JSON.stringify({ query: q });
+      s += cc(id, model, { role: "assistant", tool_calls: [{ index: i, id: `call_mock_g${i + 1}`, type: "function", function: { name: "websearch", arguments: "" } }] });
+      s += cc(id, model, { tool_calls: [{ index: i, function: { arguments: args } }] });
+    });
+    s += cc(id, model, {}, "tool_calls");
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 41, total_tokens: 102 });
+    done();
+  } else if (scn === "threemix") {
+    // v65 P2b：完成顺序与调用顺序不同（FAST 60ms 先于 SLOW 900ms 完成），配对必须按 call_id
+    const qs = ["SLOW Q1 first", "FAST Q2 second", "SLOW Q3 third"];
+    qs.forEach((q, i) => {
+      const args = JSON.stringify({ query: q });
+      s += cc(id, model, { role: "assistant", tool_calls: [{ index: i, id: `call_mock_x${i + 1}`, type: "function", function: { name: "websearch", arguments: "" } }] });
+      s += cc(id, model, { tool_calls: [{ index: i, function: { arguments: args } }] });
+    });
+    s += cc(id, model, {}, "tool_calls");
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 41, total_tokens: 102 });
+    done();
+  } else if (scn === "mixsearchfailfetch") {
+    // v65 P4b：websearch 成功 + webfetch 404 失败混合
+    const sArgs = JSON.stringify({ query: "SLOW Q-mix2" });
+    const fArgs = JSON.stringify({ url: "http://127.0.0.1:18901/nope", format: "text" });
+    s += cc(id, model, { role: "assistant", tool_calls: [{ index: 0, id: "call_mock_n1", type: "function", function: { name: "websearch", arguments: "" } }] });
+    s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: sArgs } }] });
+    s += cc(id, model, { role: "assistant", tool_calls: [{ index: 1, id: "call_mock_n2", type: "function", function: { name: "webfetch", arguments: "" } }] });
+    s += cc(id, model, { tool_calls: [{ index: 1, function: { arguments: fArgs } }] });
+    s += cc(id, model, {}, "tool_calls");
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 42, total_tokens: 103 });
+    done();
+  } else if (scn === "mixsearch") {
+    // v65 P4：同轮 websearch + webfetch 混合
+    const sArgs = JSON.stringify({ query: "SLOW Q-mix" });
+    const fArgs = JSON.stringify({ url: "http://127.0.0.1:18901/page", format: "text" });
+    s += cc(id, model, { role: "assistant", tool_calls: [{ index: 0, id: "call_mock_m1", type: "function", function: { name: "websearch", arguments: "" } }] });
+    s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: sArgs } }] });
+    s += cc(id, model, { role: "assistant", tool_calls: [{ index: 1, id: "call_mock_m2", type: "function", function: { name: "webfetch", arguments: "" } }] });
+    s += cc(id, model, { tool_calls: [{ index: 1, function: { arguments: fArgs } }] });
+    s += cc(id, model, {}, "tool_calls");
+    s += cUsage(id, model, { input_tokens: 61, output_tokens: 42, total_tokens: 103 });
+    done();
+  } else if (scn === "searchrounds") {
+    // v65 P5：多轮搜索（round1 搜 -> follow-up round2 再搜 -> final）
+    const n = nToolOutputs(body);
+    if (n < 2) {
+      const q = n === 0 ? "SLOW round1" : "SLOW round2";
+      const args = JSON.stringify({ query: q });
+      const cid = n === 0 ? "call_mock_r1" : "call_mock_r2";
+      s += cc(id, model, { role: "assistant", tool_calls: [{ index: 0, id: cid, type: "function", function: { name: "websearch", arguments: "" } }] });
+      s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: args } }] });
+      s += cc(id, model, {}, "tool_calls");
+      s += cUsage(id, model, { input_tokens: 61, output_tokens: 21, total_tokens: 82 });
+      done();
+    } else {
+      s += cc(id, model, { role: "assistant", content: `MOCK-FINAL ${mark}${echoOutputs(body)}` });
+      s += cc(id, model, {}, "stop");
+      s += cUsage(id, model, { input_tokens: 51, output_tokens: 5, total_tokens: 56 });
+      done();
+    }
+  } else if (scn === "slowsearch") {
+    // v65 S组：流式矩阵用——慢速正文块 + 1 个 websearch 调用
+    if (fu) {
+      s += cc(id, model, { role: "assistant", content: `MOCK-FINAL ${mark}${echoOutputs(body)}` });
+      s += cc(id, model, {}, "stop");
+      s += cUsage(id, model, { input_tokens: 51, output_tokens: 5, total_tokens: 56 });
+      done();
+    } else {
+      s += cc(id, model, { role: "assistant", content: `MOCK-SLOW-1 ${mark} ` });
+      s += cc(id, model, { content: `MOCK-SLOW-2 ${mark} ` });
+      s += cc(id, model, { content: `MOCK-SLOW-3 ${mark} ` });
+      const args = JSON.stringify({ query: `SLOW matrix ${mark}` });
+      s += cc(id, model, { tool_calls: [{ index: 0, id: "call_mock_ss", type: "function", function: { name: "websearch", arguments: "" } }] });
+      s += cc(id, model, { tool_calls: [{ index: 0, function: { arguments: args } }] });
+      s += cc(id, model, {}, "tool_calls");
+      s += cUsage(id, model, { input_tokens: 61, output_tokens: 41, total_tokens: 102 });
+      done();
+    }
   } else if (scn === "final") {
     s += cc(id, model, { role: "assistant", content: `MOCK-FINAL ${mark}${echoOutputs(body)}` });
     s += cc(id, model, {}, "stop");
@@ -176,15 +298,13 @@ function chatSSE(body, scenario, mark) {
   }
   return s;
 }
-
-// ---------- responses SSE builders ----------
 const ev = (o) => `data: ${JSON.stringify(o)}\n\n`;
 function respSSE(body, scenario, mark) {
   const model = body.model || "m";
   const rid = "resp_mock_1";
   const fu = isFollowUp(body);
   // 未知 scenario（如 slow 延迟后）按 text 处理
-  const scn = fu ? "final" : ["text","toolcall","searchcall","reasoning","final","thinktext","len","cf","fetchprobe","twotools","thinktool"].includes(scenario) ? scenario : "text";
+  const scn = scenario === "searchloop" ? "searchloop" : scenario === "searchrounds" ? "searchrounds" : scenario === "slowsearch" ? "slowsearch" : fu ? "final" : ["text","toolcall","searchcall","reasoning","final","thinktext","len","cf","fetchprobe","twotools","thinktool","threesearch"].includes(scenario) ? scenario : "text";
   const name = clientToolName(body);
   // 非标准命名（responses 标准是 input_tokens/output_tokens）：测回退
   const usage = (p, c, t) => ({ prompt_tokens: p, completion_tokens: c, total_tokens: t });
@@ -226,6 +346,28 @@ function respSSE(body, scenario, mark) {
     s += created();
     fnCall("call_mock_wf", "webfetch", JSON.stringify({ url: "http://127.0.0.1:18901/page", format: "text" }));
     completed(usage(31, 12, 43));
+  } else if (scn === "threesearch") {
+    // v65 P1：spark 通道一轮 3 个 websearch 调用
+    s += created();
+    const qs = ["SLOW Q1 apple", "SLOW Q2 banana", "SLOW Q3 cherry"];
+    qs.forEach((q, i) => fnCall(`call_mock_rs${i + 1}`, "websearch", JSON.stringify({ query: q }), i + 1));
+    completed(usage(61, 41, 102));
+  } else if (scn === "slowsearch") {
+    // v65 S组：spark 通道慢速正文 + 1 个 websearch 调用
+    if (fu) {
+      const ft = `MOCK-FINAL ${mark}${echoOutputs(body)}`;
+      s += created(); msgAdded();
+      textDeltas(ft);
+      textDone(ft);
+      completed(usage(51, 5, 56));
+    } else {
+      s += created(); msgAdded();
+      textDeltas(`MOCK-SLOW-1 ${mark} `);
+      textDeltas(`MOCK-SLOW-2 ${mark} `);
+      textDeltas(`MOCK-SLOW-3 ${mark} `);
+      fnCall("call_mock_ss", "websearch", JSON.stringify({ query: `SLOW matrix ${mark}` }), 1);
+      completed(usage(61, 41, 102));
+    }
   } else if (scn === "reasoning") {
     s += created(); msgAdded();
     s += ev({ type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, item_id: "msg_mock_1", delta: "MOCK-REASONING " });
@@ -402,6 +544,15 @@ const server = https.createServer(
           setTimeout(() => { try { res.destroy(); } catch {} }, 200);
           return;
         }
+        case "truncresp": { // v65 T组：responses 路径中途断流（无 completed，直接 destroy）
+          logReq(entry);
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(ev({ type: "response.created", response: { id: "resp_mock_tr", object: "response", created: 1760310000, model: "m", status: "in_progress", output: [] } }));
+          res.write(ev({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_mock_tr", role: "assistant", content: [] } }));
+          res.write(ev({ type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_mock_tr", delta: "MOCK-TRUNC-PARTIAL " }));
+          setTimeout(() => { try { res.destroy(); } catch {} }, 200);
+          return;
+        }
         case "ooo": // R51: 乱序事件（usage 先到）
           return send(200, "text/event-stream",
             bUsage({ input_tokens: 11, output_tokens: 7, total_tokens: 18 }) +
@@ -450,6 +601,24 @@ const server = https.createServer(
           return setTimeout(respond, 30000);
         case "chunks":
           return respondChunked();
+        case "slowsearch": {
+          // v65 S组：慢速分块下发（每块 400ms），验证真流式首字时间
+          const full = url.pathname === "/zen/v1/responses"
+            ? respSSE(body, entry.scenario, markOf(body))
+            : chatSSE(body, entry.scenario, markOf(body));
+          logReq(entry);
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          const lines = full.split("\n\n");
+          const parts = [];
+          for (let i = 0; i < lines.length; i += 2) parts.push(lines.slice(i, i + 2).join("\n\n"));
+          let i = 0;
+          const tick = () => {
+            if (i < parts.length) { res.write(parts[i] + "\n\n"); i++; setTimeout(tick, 400); }
+            else res.end();
+          };
+          tick();
+          return;
+        }
         case "nonjson":
           return send(200, "text/plain", "this is not json, just plain text from mock");
         case "err400html":

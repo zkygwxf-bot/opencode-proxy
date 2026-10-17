@@ -709,6 +709,10 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
   // v60：乱序缓冲——arguments delta 先于 output_item.added 到达时暂存，
   // added 登记后再拼接进去；收尾时仍无匹配才 warn 丢弃
   const orphanArgs = new Map(); // output_index -> 累积的 arguments 分片
+  let sawUpstreamEnd = false;
+  // v65: 上游完成信号（response.completed/incomplete）是否到达。
+  // 对齐原生（openai-chat.ts "stream ended without finish_reason" → incomplete-stream error）：
+  // 流结束时若从未收到完成信号，视为异常中断，不再伪造 stop/completed。
   let toolCount = 0;
   let hasTools = false;
   let doneEmitted = false;
@@ -933,9 +937,11 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
           }
           // skippedClientIndices 中的是故意暂缓的，不打警告
         } else if (obj.type === "response.completed") {
+          sawUpstreamEnd = true;
           upstreamUsage = normalizeUsage(obj.response?.usage);
           finish(hasTools ? "tool_calls" : "stop");
         } else if (obj.type === "response.incomplete") {
+          sawUpstreamEnd = true;
           upstreamUsage = normalizeUsage(obj.response?.usage);
           const reason = obj.response?.incomplete_details?.reason;
           // incomplete 时若已发出工具调用，终结符必须是 tool_calls，
@@ -949,6 +955,11 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
     // 否则 response.completed 里的 usage 会丢。
     if (buf.trim()) handleLine(buf);
     buf = "";
+  } catch (e) {
+    // v65: 上游读异常（断开/RST）→ 视为截断，走尾部截断分支报错，不再抛给外层静默 res.end()；
+    // 客户端主动断开（AbortError）原样抛出，由外层按"客户端断开"处理。
+    if (e?.name === "AbortError") throw e;
+    console.warn(`上游流读取异常，视为截断：${e?.message || e}`);
   } finally {
     // cancel 在先：中途抛错时把上游 body 关掉，否则 undici 继续缓冲无人消费的数据
     try {
@@ -964,8 +975,22 @@ async function streamResponsesToChat(upstream, emit, model, timing, knownNames, 
       `function_call_arguments.delta 孤儿分片无匹配 added (output_index=${oi})，收尾丢弃`
     );
   }
-  finish(hasTools ? "tool_calls" : "stop");
-  return { intercepted };
+  // v65: 上游流异常中断（未收到 completed/incomplete）→ 不再伪造 stop/completed，
+  // 改发 chat 错误块收尾（无 [DONE]，与 OpenAI 错误约定一致），并告知 handler 跳过 follow-up。
+  if (!sawUpstreamEnd) {
+    emit(
+      `data: ${JSON.stringify({
+        error: {
+          message: "上游响应流异常中断，未收到完成信号",
+          type: "upstream_truncated",
+          code: "upstream_truncated",
+        },
+      })}\n\n`
+    );
+  } else {
+    finish(hasTools ? "tool_calls" : "stop");
+  }
+  return { intercepted, truncated: !sawUpstreamEnd };
 }
 
 // Incremental interceptor: OpenAI chat SSE -> OpenAI chat SSE (passthrough),
@@ -1021,6 +1046,7 @@ async function streamChatToResponses(upstream, emit, model, timing) {
   const toolArgBuffers = new Map(); // index -> {id, name, args}
   let finishReason = null;
 
+  try {
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1068,6 +1094,14 @@ async function streamChatToResponses(upstream, emit, model, timing) {
       if (obj.usage) usage = obj.usage;
     }
   }
+  } catch (e) {
+    // v65: 上游读异常（断开/RST）→ 视为截断；客户端主动断开（AbortError）原样抛出
+    if (e?.name === "AbortError") throw e;
+    console.warn(`上游流读取异常，视为截断：${e?.message || e}`);
+  } finally {
+    try { await reader.cancel(); } catch {}
+    try { reader.releaseLock(); } catch {}
+  }
   // 收尾：function_call items
   for (const [, entry] of toolArgBuffers) {
     if (!entry.name) {
@@ -1109,17 +1143,31 @@ async function streamChatToResponses(upstream, emit, model, timing) {
   }
   // v57.2: chat finish_reason=length/content_filter → response.incomplete
   //（之前硬编码 completed，截断会被误报为完整响应）。
+  // v65: finishReason 为 null（流结束时从未收到上游完成信号）→ 不再伪造
+  // response.completed，改发 response.failed（对齐原生 incomplete-stream error；
+  // 形状沿用 X 会话 fail() 先例）。
   const _incReason = finishReason === "length" ? "max_output_tokens" : finishReason === "content_filter" ? "content_filter" : null;
-  emitEvent({
-    type: _incReason ? "response.incomplete" : "response.completed",
-    response: {
-      id: respId, object: "response", created, model,
-      status: _incReason ? "incomplete" : "completed",
-      ...(_incReason ? { incomplete_details: { reason: _incReason } } : {}),
-      output, usage: respUsage,
-    },
-  });
-  return { text: textParts.join(""), toolCalls, finishReason };
+  if (finishReason === null) {
+    emitEvent({
+      type: "response.failed",
+      response: {
+        id: respId, object: "response", created, model, status: "failed",
+        output, usage: respUsage,
+        error: { message: "上游响应流异常中断，未收到完成信号", type: "upstream_truncated", code: "upstream_truncated" },
+      },
+    });
+  } else {
+    emitEvent({
+      type: _incReason ? "response.incomplete" : "response.completed",
+      response: {
+        id: respId, object: "response", created, model,
+        status: _incReason ? "incomplete" : "completed",
+        ...(_incReason ? { incomplete_details: { reason: _incReason } } : {}),
+        output, usage: respUsage,
+      },
+    });
+  }
+  return { text: textParts.join(""), toolCalls, finishReason, truncated: finishReason === null };
 }
 
 // v47: Chat SSE → Anthropic SSE 流式转换。
@@ -1138,6 +1186,7 @@ async function streamChatToAnthropic(upstream, emit, model, timing) {
   const toolArgBuffers = new Map();
   let finishReason = null;
   let blockIndex = 1;
+  try {
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1200,6 +1249,14 @@ async function streamChatToAnthropic(upstream, emit, model, timing) {
       if (obj.usage) usage = obj.usage;
     }
   }
+  } catch (e) {
+    // v65: 上游读异常（断开/RST）→ 视为截断；客户端主动断开（AbortError）原样抛出
+    if (e?.name === "AbortError") throw e;
+    console.warn(`上游流读取异常，视为截断：${e?.message || e}`);
+  } finally {
+    try { await reader.cancel(); } catch {}
+    try { reader.releaseLock(); } catch {}
+  }
   emitEvent({ type: "content_block_stop", index: 0 });
   for (const [, entry] of toolArgBuffers) {
     if (!entry.name) continue;
@@ -1224,12 +1281,22 @@ async function streamChatToAnthropic(upstream, emit, model, timing) {
     output_tokens: usage?.output_tokens ?? usage?.completion_tokens ?? 0,
   };
   if (timing) timing.usage = { prompt_tokens: outUsage.input_tokens, completion_tokens: outUsage.output_tokens, total_tokens: (usage?.total_tokens ?? outUsage.input_tokens + outUsage.output_tokens) };
-  emitEvent({ type: "message_delta", delta: { stop_reason: stopReason }, usage: { input_tokens: outUsage.input_tokens, output_tokens: outUsage.output_tokens } });
-  emitEvent({ type: "message_stop" });
-  return { text: textParts.join(""), toolCalls, finishReason };
+  // v65: finishReason 为 null（流结束时从未收到上游完成信号）→ 不再伪造
+  // end_turn/message_stop，改发 error 事件（对齐原生 incomplete-stream error；
+  // 形状沿用 X 会话 fail() 先例）。
+  if (finishReason === null) {
+    emitEvent({ type: "error", error: { type: "api_error", message: "上游响应流异常中断，未收到完成信号" } });
+  } else {
+    emitEvent({ type: "message_delta", delta: { stop_reason: stopReason }, usage: { input_tokens: outUsage.input_tokens, output_tokens: outUsage.output_tokens } });
+    emitEvent({ type: "message_stop" });
+  }
+  return { text: textParts.join(""), toolCalls, finishReason, truncated: finishReason === null };
 }
 async function streamChatDirectWithIntercept(upstream, emit, model, timing, interceptNames, knownNames) {
   const intercepted = []; // [{ call_id, name, arguments }]
+  // v65: 上游完成信号（finish_reason 或 [DONE]）是否到达。对齐原生
+  //（openai-chat.ts "stream ended without finish_reason" → incomplete-stream error）。
+  let sawFinishSignal = false;
   const pending = new Map(); // tool index -> { entry, decided, held: [] }
   let proxySeenThisRound = false;
   const reader = upstream.body.getReader();
@@ -1270,6 +1337,7 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
     const payload = t.slice(5).trim();
     if (!payload) return;
     if (payload === "[DONE]") {
+      sawFinishSignal = true;
       finalizeUndecided();
       // 有拦截时 [DONE] 由 follow-up 的最后一轮发出，这里吞掉
       if (intercepted.length === 0) emit("data: [DONE]\n\n");
@@ -1341,6 +1409,7 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
       return;
     }
     if (choice && choice.finish_reason) {
+      sawFinishSignal = true;
       finalizeUndecided();
       // 有拦截时终结符由 follow-up 的最后一轮发出，这里吞掉，避免客户端提前收尾
       if (intercepted.length > 0) return;
@@ -1372,6 +1441,10 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
     }
     if (buf.trim()) handleLine(buf);
     buf = "";
+  } catch (e) {
+    // v65: 上游读异常（断开/RST）→ 视为截断；客户端主动断开（AbortError）原样抛出
+    if (e?.name === "AbortError") throw e;
+    console.warn(`上游流读取异常，视为截断：${e?.message || e}`);
   } finally {
     try {
       await reader.cancel();
@@ -1381,7 +1454,9 @@ async function streamChatDirectWithIntercept(upstream, emit, model, timing, inte
     } catch {}
   }
   finalizeUndecided();
-  return { intercepted };
+  // v65: 未收到完成信号即流结束 → 截断。由 handler 按下游格式报错，
+  // 不再让调用方误以为正常结束（对齐原生 incomplete-stream error）。
+  return { intercepted, truncated: !sawFinishSignal };
 }
 
 // v64: 翻译路径（translateToChat）搜索流式的增量翻译会话。
@@ -1949,6 +2024,10 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
     // 上游最后一段可能没有换行结尾：残留行也要处理，否则 completed 里的 usage 会丢
     if (buf.trim() && !streamDone) handleLine(buf);
     buf = "";
+  } catch (e) {
+    // v65: 上游读异常（断开/RST）→ 视为截断；客户端主动断开（AbortError）原样抛出
+    if (e?.name === "AbortError") throw e;
+    console.warn(`上游流读取异常，视为截断：${e?.message || e}`);
   } finally {
     // cancel 在先：中途抛错时把上游 body 关掉，否则 undici 继续缓冲无人消费的数据
     try {
@@ -1959,9 +2038,10 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
     } catch {}
   }
   // completed/incomplete 已正常结束：不再走兜底关闭，避免重复发 message_stop
-  if (streamDone) return { intercepted, nextBlockIndex: blockIndex };
-  // Stream ended without response.completed: close gracefully.
-  // v60：乱序到达但 added 始终没来的孤儿参数分片，收尾时 warn 丢弃
+  if (streamDone) return { intercepted, nextBlockIndex: blockIndex, truncated: false };
+  // v65: 上游流异常中断（未收到 completed/incomplete）→ 不再伪造 end_turn/message_stop
+  // "优雅关闭"，改发 error 事件（对齐原生 incomplete-stream error）。handler 见 truncated
+  // 后跳过 follow-up，不再续写这个 message。
   for (const [oi, args] of orphanArgs) {
     console.warn(
       `function_call_arguments.delta 孤儿分片无匹配 added (output_index=${oi})，收尾丢弃`
@@ -1972,17 +2052,8 @@ async function streamResponsesToAnthropic(upstream, emit, model, timing, knownNa
   for (const bi of toolBlocks.values()) {
     ev("content_block_stop", { type: "content_block_stop", index: bi });
   }
-  // 有拦截的内置工具调用时不发 message_delta/message_stop：
-  // handler 会执行工具后做 follow-up，续写同一个 message
-  if (intercepted.length === 0) {
-    ev("message_delta", {
-      type: "message_delta",
-      delta: { stop_reason: hasTools ? "tool_use" : "end_turn" },
-      usage: { input_tokens: 0, output_tokens: 0 },
-    });
-    ev("message_stop", { type: "message_stop" });
-  }
-  return { intercepted, nextBlockIndex: blockIndex };
+  ev("error", { type: "error", error: { type: "api_error", message: "上游响应流异常中断，未收到完成信号" } });
+  return { intercepted, nextBlockIndex: blockIndex, truncated: true };
 }
 
 // Incremental interceptor: Responses SSE -> Responses SSE (verbatim passthrough),
@@ -2109,6 +2180,10 @@ async function streamResponsesDirectWithIntercept(upstream, emit, interceptNames
     }
     if (buf.trim() && !streamDone) handleLine(buf);
     buf = "";
+  } catch (e) {
+    // v65: 上游读异常（断开/RST）→ 视为截断；客户端主动断开（AbortError）原样抛出
+    if (e?.name === "AbortError") throw e;
+    console.warn(`上游流读取异常，视为截断：${e?.message || e}`);
   } finally {
     try {
       await reader.cancel();
@@ -2117,7 +2192,24 @@ async function streamResponsesDirectWithIntercept(upstream, emit, interceptNames
       reader.releaseLock();
     } catch {}
   }
-  return { intercepted };
+  // v65: 上游流异常中断（未收到 completed/incomplete）→ 不再让下游连接静默结束，
+  // 补发 response.failed（对齐原生 incomplete-stream error）。handler 见 truncated 后跳过 follow-up。
+  if (!streamDone) {
+    rawEmit(
+      JSON.stringify({
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: {
+            message: "上游响应流异常中断，未收到完成信号",
+            type: "upstream_truncated",
+            code: "upstream_truncated",
+          },
+        },
+      })
+    );
+  }
+  return { intercepted, truncated: !streamDone };
 }
 
 // Assemble a non-streaming Responses object from SSE events.
@@ -2158,6 +2250,9 @@ function sseToResponse(sseText, fallbackModel, knownNames) {
   let cached = null;
   let status = "completed";
   let incompleteReason = "";
+  // v65: 是否真正收到上游完成信号（response.completed/incomplete）。对齐原生
+  //（incomplete-stream error）：未收到即视为异常中断，返回错误形状而非伪造 completed。
+  let sawEnd = false;
   const functions = [];
   const seenFn = new Set();
   const pushFn = (item) => {
@@ -2208,6 +2303,7 @@ function sseToResponse(sseText, fallbackModel, knownNames) {
       obj.type === "response.completed" ||
       obj.type === "response.incomplete"
     ) {
+      sawEnd = true;
       if (obj.type === "response.incomplete") {
         status = "incomplete";
         incompleteReason = resp.incomplete_details?.reason || "";
@@ -2252,6 +2348,16 @@ function sseToResponse(sseText, fallbackModel, knownNames) {
   }
   const text = textParts.join("");
   const reasoning = reasoningParts.join("");
+  // v65: 上游流异常中断 → 返回错误形状，不伪造 completed 的半截 response
+  if (!sawEnd) {
+    return {
+      error: {
+        message: "上游响应流异常中断，未收到完成信号",
+        type: "upstream_truncated",
+        code: "upstream_truncated",
+      },
+    };
+  }
   const output = [
     {
       type: "message",
@@ -2314,12 +2420,16 @@ function sseToChatCompletion(sseText, fallbackModel) {
   let created = Math.floor(Date.now() / 1000);
   let model = fallbackModel;
   let finishReason = "stop";
+  // v65: 是否真正收到上游完成信号（finish_reason 或 [DONE]）。对齐原生
+  //（openai-chat.ts "stream ended without finish_reason" → incomplete-stream error）：
+  // 未收到即视为异常中断，返回错误形状而非伪造 stop 的半截 completion。
+  let sawFinish = false;
   let usage = null;
   for (const line of sseText.split("\n")) {
     const t = line.trim();
     if (!t.startsWith("data:")) continue;
     const payload = t.slice(5).trim();
-    if (payload === "[DONE]") continue;
+    if (payload === "[DONE]") { sawFinish = true; continue; }
     let obj;
     try {
       obj = JSON.parse(payload);
@@ -2334,7 +2444,7 @@ function sseToChatCompletion(sseText, fallbackModel) {
       if (obj.usage) usage = obj.usage;
       continue;
     }
-    if (choice.finish_reason) finishReason = choice.finish_reason;
+    if (choice.finish_reason) { finishReason = choice.finish_reason; sawFinish = true; }
     const d = choice.delta || choice.message || {};
     if (typeof d.content === "string") contentParts.push(d.content);
     if (typeof d.reasoning_content === "string") reasoningParts.push(d.reasoning_content);
@@ -2376,6 +2486,16 @@ function sseToChatCompletion(sseText, fallbackModel) {
     } catch {}
   }
   if (cleanToolCalls.length) message.tool_calls = cleanToolCalls;
+  // v65: 上游流异常中断 → 返回错误形状，不伪造 stop 的半截 completion
+  if (!sawFinish) {
+    return {
+      error: {
+        message: "上游响应流异常中断，未收到完成信号",
+        type: "upstream_truncated",
+        code: "upstream_truncated",
+      },
+    };
+  }
   return {
     id,
     object: "chat.completion",
@@ -3149,6 +3269,27 @@ async function runProxyTool(name, argsJson, seq, signal, forceSearch = requestFo
     return doWebsearch(args, seq, signal);
   }
   return `未知内置工具：${name}`;
+}
+
+// v65: 同一步内多个内置工具调用并发执行（对齐 OpenCode 原生做法：
+// packages/core/src/session/runner/step.ts —— 同一步的工具调用 fork 为独立
+// fiber 并发执行、逐调用错误隔离（classifyToolExits 按单个 fiber 的 exit
+// 分类，失败不影响同批其他工具）、中断时一并取消（Fiber.interruptAll）。
+// Promise.all 按索引顺序返回，outputs[i] 与 calls[i] 严格配对，与顺序执行
+// 的结果数组逐字节一致（除耗时外无可观察差异）；各调用共享同一 signal，
+// 客户端断开时未完成的工具一并取消。
+async function runProxyToolsParallel(calls, seq, signal, forceSearch) {
+  return Promise.all(
+    calls.map(async (c) => {
+      try {
+        return await runProxyTool(c.name, c.arguments, seq, signal, forceSearch);
+      } catch (e) {
+        // 兜底：runProxyTool 自称永不抛异常，但 ssrfBlockReason 等路径理论上
+        // 可能抛；单个工具的异常只污染自己的结果，不中断同轮其他工具。
+        return `${c.name === WEBSEARCH_NAME ? "搜索失败" : "抓取失败"}：${e?.message || e}`;
+      }
+    })
+  );
 }
 
 // 拦截到的工具调用转成 Responses input items（follow-up 请求用）
@@ -4220,15 +4361,18 @@ const server = http.createServer((req, res) => {
               );
               blockBase = rF.nextBlockIndex;
               skipStart = true;
+              // v65: 上游流异常中断（translator 已发 error 事件）：跳过 follow-up
+              if (rF.truncated) break;
               totalUsageF = mergeUsageSum(totalUsageF, timing.usage);
               timing.usage = null;
               if (rF.intercepted.length === 0) break;
-              const outputsF = [];
-              for (const call of rF.intercepted) {
-                outputsF.push(
-                  await runProxyTool(call.name, call.arguments, seq, ac.signal, forceSearch)
-                );
-              }
+              // v65: 同轮多个内置工具调用并发执行（对齐原生）
+              const outputsF = await runProxyToolsParallel(
+                rF.intercepted,
+                seq,
+                ac.signal,
+                forceSearch
+              );
               currentInputF = [
                 ...currentInputF,
                 ...proxyToolInputItems(rF.intercepted, outputsF),
@@ -4295,27 +4439,34 @@ const server = http.createServer((req, res) => {
               sseTextFN = (await readUpstreamBody(upFN)).toString();
             }
             respObjFN = sseToResponse(sseTextFN, body?.model || "unknown", knownF);
+            if (respObjFN.error) {
+              // v65: 上游流异常中断：不伪造 completion，直接返回错误（对齐原生 incomplete-stream error）
+              return sendJson(res, 502, respObjFN);
+            }
             totalUsageFN = mergeResponsesUsage(totalUsageFN, respObjFN.usage);
             const proxyCallsFN = (respObjFN.output || []).filter(
               (item) => item?.type === "function_call" && interceptNamesF.has(item.name)
             );
             if (proxyCallsFN.length === 0) break;
-            const callsFN = [];
-            const outputsFN = [];
-            for (const pc of proxyCallsFN) {
-              const args =
+            const normedFN = proxyCallsFN.map((pc) => ({
+              name: pc.name,
+              arguments:
                 typeof pc.arguments === "string"
                   ? pc.arguments
-                  : JSON.stringify(pc.arguments ?? {});
-              outputsFN.push(
-                await runProxyTool(pc.name, args, seq, ac.signal, forceSearch)
-              );
-              callsFN.push({
-                call_id: pc.call_id || `call_proxy_${++proxyCallSeq}`,
-                name: pc.name,
-                arguments: args,
-              });
-            }
+                  : JSON.stringify(pc.arguments ?? {}),
+            }));
+            // v65: 同轮多个内置工具调用并发执行（对齐原生）
+            const outputsFN = await runProxyToolsParallel(
+              normedFN,
+              seq,
+              ac.signal,
+              forceSearch
+            );
+            const callsFN = normedFN.map((n, i) => ({
+              call_id: proxyCallsFN[i].call_id || `call_proxy_${++proxyCallSeq}`,
+              name: n.name,
+              arguments: n.arguments,
+            }));
             currentInputFN = [
               ...currentInputFN,
               ...proxyToolInputItems(callsFN, outputsFN),
@@ -4333,6 +4484,10 @@ const server = http.createServer((req, res) => {
                 if (finalFN.ok) {
                   const finalTextFN = (await readUpstreamBody(finalFN)).toString();
                   respObjFN = sseToResponse(finalTextFN, body?.model || "unknown", knownF);
+                  if (respObjFN.error) {
+                    // v65: 上游流异常中断：不伪造 completion，直接返回错误
+                    return sendJson(res, 502, respObjFN);
+                  }
                   totalUsageFN = mergeResponsesUsage(totalUsageFN, respObjFN.usage);
                 }
               } catch (e) {
@@ -4419,7 +4574,7 @@ const server = http.createServer((req, res) => {
                 break;
               }
             }
-            const { intercepted } = await streamResponsesToChat(
+            const { intercepted, truncated } = await streamResponsesToChat(
               up,
               (c) => res.write(c),
               body?.model || "unknown",
@@ -4427,15 +4582,18 @@ const server = http.createServer((req, res) => {
               collectToolNames(body, forceSearch),
               { interceptNames: proxyInterceptNames }
             );
+            // v65: 上游流异常中断（translator 已发 error chunk）：跳过 follow-up
+            if (truncated) break;
             totalUsage = mergeUsage(totalUsage, timing.usage);
             timing.usage = null; // 下轮重新累积，避免重复计算
             if (intercepted.length === 0) break;
-            // 本地执行内置工具
-            const outputs = [];
-            for (const call of intercepted) {
-              const out = await runProxyTool(call.name, call.arguments, seq, ac.signal, forceSearch);
-              outputs.push(out);
-            }
+            // v65: 同轮多个内置工具调用并发执行（对齐原生）；本地执行内置工具
+            const outputs = await runProxyToolsParallel(
+              intercepted,
+              seq,
+              ac.signal,
+              forceSearch
+            );
             currentInput = [
               ...currentInput,
               ...proxyToolInputItems(intercepted, outputs),
@@ -4531,19 +4689,28 @@ const server = http.createServer((req, res) => {
             );
           }
           respObj = sseToResponse(sseTextNS, body?.model || "unknown", collectToolNames(body, forceSearch));
+          if (respObj.error) {
+            // v65: 上游流异常中断：不伪造 completion，直接返回错误（对齐原生 incomplete-stream error）
+            return sendJson(res, 502, respObj);
+          }
           totalUsageNS = mergeUsageNS(totalUsageNS, respObj.usage);
           // 检查内置工具调用（只认本请求实际注入的，客户端自带同名工具不拦截）
           const proxyCalls = (respObj.output || []).filter(
             (item) => item?.type === "function_call" && proxyInterceptNames.has(item.name)
           );
           if (proxyCalls.length === 0) break;
-          const callsNS = [];
-          const outputsNS = [];
-          for (const pc of proxyCalls) {
-            const args = typeof pc.arguments === "string" ? pc.arguments : JSON.stringify(pc.arguments ?? {});
-            outputsNS.push(await runProxyTool(pc.name, args, seq, ac.signal, forceSearch));
-            callsNS.push({ call_id: pc.call_id || `call_proxy_${++proxyCallSeq}`, name: pc.name, arguments: args });
-          }
+          const normedNS = proxyCalls.map((pc) => ({
+            name: pc.name,
+            arguments: typeof pc.arguments === "string" ? pc.arguments : JSON.stringify(pc.arguments ?? {}),
+          }));
+          // v65: 同轮多个内置工具调用并发执行（对齐原生）
+          const outputsNS = await runProxyToolsParallel(
+            normedNS,
+            seq,
+            ac.signal,
+            forceSearch
+          );
+          const callsNS = normedNS.map((n, i) => ({ call_id: proxyCalls[i].call_id || `call_proxy_${++proxyCallSeq}`, name: n.name, arguments: n.arguments }));
           currentInputNS = [...currentInputNS, ...proxyToolInputItems(callsNS, outputsNS)];
           if (roundNS === 4) {
             // 5 轮上限：再做一次 follow-up 拿最终回答（不再拦截工具调用）
@@ -4559,6 +4726,10 @@ const server = http.createServer((req, res) => {
               if (finalNS.ok) {
                 const finalText = (await readUpstreamBody(finalNS)).toString();
                 respObj = sseToResponse(finalText, body?.model || "unknown", collectToolNames(body, forceSearch));
+                if (respObj.error) {
+                  // v65: 上游流异常中断：不伪造 completion，直接返回错误
+                  return sendJson(res, 502, respObj);
+                }
                 totalUsageNS = mergeUsageNS(totalUsageNS, respObj.usage);
               }
             } catch (e) {
@@ -4681,6 +4852,13 @@ const server = http.createServer((req, res) => {
               }
               totalUsageX = mergeUsageSum(totalUsageX, timing.usage);
               timing.usage = null;
+              if (rX.truncated) {
+                // v65: 本轮上游流异常中断（未收到完成信号）：不 follow-up、
+                // 不伪造完成，下游格式报错收尾（对齐原生 incomplete-stream error）
+                console.warn("搜索流式上游异常中断（未收到完成信号），已终止本次请求");
+                failedX = true;
+                break;
+              }
               if (rX.intercepted.length === 0) {
                 // 本轮无拦截：下发本轮缓冲的客户端工具，收尾
                 xlateX.endRound(false);
@@ -4690,18 +4868,13 @@ const server = http.createServer((req, res) => {
               // 本轮有拦截：客户端工具暂缓（直连 chat 路径同语义），
               // 完成类事件继续扣住，本地执行内置工具后下一轮。
               xlateX.endRound(true);
-              const outputsX = [];
-              for (const call of rX.intercepted) {
-                outputsX.push(
-                  await runProxyTool(
-                    call.name,
-                    call.arguments,
-                    seq,
-                    ac.signal,
-                    forceSearch
-                  )
-                );
-              }
+              // v65: 同轮多个内置工具调用并发执行（对齐原生）
+              const outputsX = await runProxyToolsParallel(
+                rX.intercepted,
+                seq,
+                ac.signal,
+                forceSearch
+              );
               if (clientGone) break;
               const callsX = rX.intercepted.map((c) => ({
                 id: c.call_id || `call_proxy_${++proxyCallSeq}`,
@@ -4757,12 +4930,18 @@ const server = http.createServer((req, res) => {
                     );
                     totalUsageX = mergeUsageSum(totalUsageX, timing.usage);
                     timing.usage = null;
-                    if (rF.intercepted.length > 0) {
-                      console.warn(
-                        "5 轮上限收尾轮仍有内置工具调用，已丢弃（不再执行）"
-                      );
+                    if (rF.truncated) {
+                      // v65: 收尾轮上游异常中断：报错收尾，不伪造完成
+                      console.warn("收尾 follow-up 上游异常中断（未收到完成信号）");
+                      failedX = true;
+                    } else {
+                      if (rF.intercepted.length > 0) {
+                        console.warn(
+                          "5 轮上限收尾轮仍有内置工具调用，已丢弃（不再执行）"
+                        );
+                      }
+                      xlateX.endRound(true);
                     }
-                    xlateX.endRound(true);
                   } else {
                     failedX = true;
                   }
@@ -4805,6 +4984,10 @@ const server = http.createServer((req, res) => {
               console.error("上游报错：免费身份已过期。");
             }
             chatObj = sseToChatCompletion(sseText, targetModel);
+            if (chatObj.error) {
+              // v65: 上游流异常中断：不伪造 completion，直接返回错误（对齐原生 incomplete-stream error）
+              return sendJson(res, 502, chatObj);
+            }
           } else {
             // v63: 搜索开：chat 层 agentic loop（与直连 chat 非流式同款），
             // 末轮 chat object 再转下游格式。proxy 工具调用被拦截本地执行，
@@ -4838,6 +5021,10 @@ const server = http.createServer((req, res) => {
                 sseTextY = (await readUpstreamBody(upY)).toString();
               }
               chatObj = sseToChatCompletion(sseTextY, targetModel);
+              if (chatObj.error) {
+                // v65: 上游流异常中断：不伪造 completion，直接返回错误
+                return sendJson(res, 502, chatObj);
+              }
               totalUsageY = mergeUsageSum(totalUsageY, chatObj.usage);
               const proxyCallsY = (
                 chatObj.choices?.[0]?.message?.tool_calls || []
@@ -4849,23 +5036,26 @@ const server = http.createServer((req, res) => {
                   )
               );
               if (proxyCallsY.length === 0) break;
-              const callsY = [];
-              const outputsY = [];
-              for (const pc of proxyCallsY) {
+              const normedY = proxyCallsY.map((pc) => {
                 const nm = unprefixToolName(pc.function.name, knownX);
                 const args =
                   typeof pc.function.arguments === "string"
                     ? pc.function.arguments
                     : JSON.stringify(pc.function.arguments ?? {});
-                outputsY.push(
-                  await runProxyTool(nm, args, seq, ac.signal, forceSearch)
-                );
-                callsY.push({
-                  id: pc.id || `call_proxy_${++proxyCallSeq}`,
-                  name: nm,
-                  arguments: args,
-                });
-              }
+                return { nm, args, id: pc.id };
+              });
+              // v65: 同轮多个内置工具调用并发执行（对齐原生）
+              const outputsY = await runProxyToolsParallel(
+                normedY.map((n) => ({ name: n.nm, arguments: n.args })),
+                seq,
+                ac.signal,
+                forceSearch
+              );
+              const callsY = normedY.map((n) => ({
+                id: n.id || `call_proxy_${++proxyCallSeq}`,
+                name: n.nm,
+                arguments: n.args,
+              }));
               currentMessagesY = [
                 ...currentMessagesY,
                 {
@@ -4905,6 +5095,10 @@ const server = http.createServer((req, res) => {
                       await readUpstreamBody(finalY)
                     ).toString();
                     chatObj = sseToChatCompletion(finalTextY, targetModel);
+                    if (chatObj.error) {
+                      // v65: 上游流异常中断：不伪造 completion，直接返回错误
+                      return sendJson(res, 502, chatObj);
+                    }
                     totalUsageY = mergeUsageSum(totalUsageY, chatObj.usage);
                   }
                 } catch (e) {
@@ -5049,6 +5243,10 @@ const server = http.createServer((req, res) => {
             sseTextC = (await readUpstreamBody(upC)).toString();
           }
           chatObj = sseToChatCompletion(sseTextC, body?.model || "unknown");
+          if (chatObj.error) {
+            // v65: 上游流异常中断：不伪造 completion，直接返回错误（对齐原生 incomplete-stream error）
+            return sendJson(res, 502, chatObj);
+          }
           totalUsageC = mergeUsageSum(totalUsageC, chatObj.usage);
           const proxyCallsC = (
             chatObj.choices?.[0]?.message?.tool_calls || []
@@ -5058,23 +5256,26 @@ const server = http.createServer((req, res) => {
               interceptNamesC.has(unprefixToolName(tc.function.name, knownC))
           );
           if (proxyCallsC.length === 0) break;
-          const callsC = [];
-          const outputsC = [];
-          for (const pc of proxyCallsC) {
+          const normedC = proxyCallsC.map((pc) => {
             const nm = unprefixToolName(pc.function.name, knownC);
             const args =
               typeof pc.function.arguments === "string"
                 ? pc.function.arguments
                 : JSON.stringify(pc.function.arguments ?? {});
-            outputsC.push(
-              await runProxyTool(nm, args, seq, ac.signal, forceSearch)
-            );
-            callsC.push({
-              id: pc.id || `call_proxy_${++proxyCallSeq}`,
-              name: nm,
-              arguments: args,
-            });
-          }
+            return { nm, args, id: pc.id };
+          });
+          // v65: 同轮多个内置工具调用并发执行（对齐原生）
+          const outputsC = await runProxyToolsParallel(
+            normedC.map((n) => ({ name: n.nm, arguments: n.args })),
+            seq,
+            ac.signal,
+            forceSearch
+          );
+          const callsC = normedC.map((n) => ({
+            id: n.id || `call_proxy_${++proxyCallSeq}`,
+            name: n.nm,
+            arguments: n.args,
+          }));
           currentMessagesC = [
             ...currentMessagesC,
             {
@@ -5104,6 +5305,10 @@ const server = http.createServer((req, res) => {
               if (finalC.ok) {
                 const finalTextC = (await readUpstreamBody(finalC)).toString();
                 chatObj = sseToChatCompletion(finalTextC, body?.model || "unknown");
+                if (chatObj.error) {
+                  // v65: 上游流异常中断：不伪造 completion，直接返回错误
+                  return sendJson(res, 502, chatObj);
+                }
                 totalUsageC = mergeUsageSum(totalUsageC, chatObj.usage);
               }
             } catch (e) {
@@ -5156,27 +5361,34 @@ const server = http.createServer((req, res) => {
             sseTextE = (await readUpstreamBody(upE)).toString();
           }
           respObj = sseToResponse(sseTextE, body?.model || "unknown", knownE);
+          if (respObj.error) {
+            // v65: 上游流异常中断：不伪造 completion，直接返回错误（对齐原生 incomplete-stream error）
+            return sendJson(res, 502, respObj);
+          }
           totalUsageE = mergeResponsesUsage(totalUsageE, respObj.usage);
           const proxyCallsE = (respObj.output || []).filter(
             (item) => item?.type === "function_call" && interceptNamesE.has(item.name)
           );
           if (proxyCallsE.length === 0) break;
-          const callsE = [];
-          const outputsE = [];
-          for (const pc of proxyCallsE) {
-            const args =
+          const normedE = proxyCallsE.map((pc) => ({
+            name: pc.name,
+            arguments:
               typeof pc.arguments === "string"
                 ? pc.arguments
-                : JSON.stringify(pc.arguments ?? {});
-            outputsE.push(
-              await runProxyTool(pc.name, args, seq, ac.signal, forceSearch)
-            );
-            callsE.push({
-              call_id: pc.call_id || `call_proxy_${++proxyCallSeq}`,
-              name: pc.name,
-              arguments: args,
-            });
-          }
+                : JSON.stringify(pc.arguments ?? {}),
+          }));
+          // v65: 同轮多个内置工具调用并发执行（对齐原生）
+          const outputsE = await runProxyToolsParallel(
+            normedE,
+            seq,
+            ac.signal,
+            forceSearch
+          );
+          const callsE = normedE.map((n, i) => ({
+            call_id: proxyCallsE[i].call_id || `call_proxy_${++proxyCallSeq}`,
+            name: n.name,
+            arguments: n.arguments,
+          }));
           currentInputE = [
             ...currentInputE,
             ...proxyToolInputItems(callsE, outputsE),
@@ -5194,6 +5406,10 @@ const server = http.createServer((req, res) => {
               if (finalE.ok) {
                 const finalTextE = (await readUpstreamBody(finalE)).toString();
                 respObj = sseToResponse(finalTextE, body?.model || "unknown", knownE);
+                if (respObj.error) {
+                  // v65: 上游流异常中断：不伪造 completion，直接返回错误
+                  return sendJson(res, 502, respObj);
+                }
                 totalUsageE = mergeResponsesUsage(totalUsageE, respObj.usage);
               }
             } catch (e) {
@@ -5262,15 +5478,31 @@ const server = http.createServer((req, res) => {
             interceptNamesB,
             knownB
           );
+          if (rB.truncated) {
+            // v65: 上游流异常中断：不伪造完成，直接 error chunk 收尾（对齐原生 incomplete-stream error）
+            try {
+              res.write(
+                `data: ${JSON.stringify({
+                  error: {
+                    message: "上游响应流异常中断，未收到完成信号",
+                    type: "upstream_truncated",
+                    code: "upstream_truncated",
+                  },
+                })}\n\n`
+              );
+            } catch {}
+            break;
+          }
           totalUsageB = mergeUsageSum(totalUsageB, timing.usage);
           timing.usage = null;
           if (rB.intercepted.length === 0) break;
-          const outputsB = [];
-          for (const call of rB.intercepted) {
-            outputsB.push(
-              await runProxyTool(call.name, call.arguments, seq, ac.signal, forceSearch)
-            );
-          }
+          // v65: 同轮多个内置工具调用并发执行（对齐原生）
+          const outputsB = await runProxyToolsParallel(
+            rB.intercepted,
+            seq,
+            ac.signal,
+            forceSearch
+          );
           const callsB = rB.intercepted.map((c) => ({
             id: c.call_id || `call_proxy_${++proxyCallSeq}`,
             name: c.name,
@@ -5371,15 +5603,18 @@ const server = http.createServer((req, res) => {
             knownD,
             timing
           );
+          // v65: 上游流异常中断（translator 已补发 response.failed）：跳过 follow-up
+          if (rD.truncated) break;
           totalUsageD = mergeUsageSum(totalUsageD, timing.usage);
           timing.usage = null;
           if (rD.intercepted.length === 0) break;
-          const outputsD = [];
-          for (const call of rD.intercepted) {
-            outputsD.push(
-              await runProxyTool(call.name, call.arguments, seq, ac.signal, forceSearch)
-            );
-          }
+          // v65: 同轮多个内置工具调用并发执行（对齐原生）
+          const outputsD = await runProxyToolsParallel(
+            rD.intercepted,
+            seq,
+            ac.signal,
+            forceSearch
+          );
           currentInputD = [
             ...currentInputD,
             ...proxyToolInputItems(rD.intercepted, outputsD),
