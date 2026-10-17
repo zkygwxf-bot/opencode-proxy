@@ -5,27 +5,30 @@
 ## 支持的模型
 
 - deepseek-v4.1-flash-free（chat）
+- glm-5.3-flash-free（chat）
 - mimo-v2.6-flash-free（chat）
 - nemotron-3.5-lightning-free（chat）
+- nemotron-3.5-super-vl-free（chat）
 - big-pickle（chat）
-- muse-spark-1.2-contributor-free（responses）
+- beam-free（chat）
 - longcat-2.5-preview-free（chat）
 - space-bunny-free（chat）
+- muse-spark-1.2-contributor-free（responses）
 
 ## 安装
 
-v61
+v62
 
 老用户更新命令：
 
 ```
-rm -rf ~/opencode-proxy && curl -sL -o ~/v61.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v61/opencode-proxy-phone-v61.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v61.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+rm -rf ~/opencode-proxy && curl -sL -o ~/v62.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v62/opencode-proxy-phone-v62.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v62.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 新用户安装命令：
 
 ```
-curl -sL -o ~/v61.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v61/opencode-proxy-phone-v61.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v61.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
+curl -sL -o ~/v62.zip https://github.com/zkygwxf-bot/opencode-proxy/releases/download/v62/opencode-proxy-phone-v62.zip && mkdir -p ~/opencode-proxy && unzip -qo ~/v62.zip -d ~/opencode-proxy && chmod +x ~/opencode-proxy/ai && ln -sf ~/opencode-proxy/ai $PREFIX/bin/ai && ai
 ```
 
 ## 使用
